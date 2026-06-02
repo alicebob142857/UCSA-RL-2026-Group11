@@ -1,0 +1,2 @@
+algorithm,total_steps,net_arch,start_level,final_eval_level,curriculum,return_mean,length_mean,success_rate
+PPO,2048,128-64-32,easy,easy,False,1664.524430855245,926.55,0.9
