@@ -1,0 +1,44 @@
+seed: 11
+total_steps: 200000
+learning_rate: 0.0001
+lr_schedule: linear
+gamma: 0.995
+n_steps: 2048
+batch_size: 256
+gae_lambda: 0.95
+clip_range: 0.2
+ent_coef: 0.0
+vf_coef: 0.5
+max_grad_norm: 0.5
+log_std_init: -1.5
+target_kl: 0.03
+net_arch: []
+lqr_warm_start: true
+lqr_warm_start_steps: 1
+lqr_warm_start_samples: 12288
+lqr_warm_start_batch: 512
+lqr_warm_start_lr: 0.001
+lqr_exact_linear_init: true
+lqr_trajectory_fraction: 0.15
+lqr_rollout_max_steps: 500
+
+start_level: easy
+max_level: hard
+curriculum: true
+promotion_success_rate: 0.8
+promotion_patience: 1
+promotion_check_freq: 20000
+promotion_eval_episodes: 20
+best_success_gate: 0.8
+
+bc_regularization: false
+bc_steps_per_rollout: 24
+bc_samples_per_level: 512
+bc_batch: 256
+bc_lr: 0.0003
+bc_log_every_rollouts: 10
+
+eval_episodes: 20
+model_path: outputs/models/group11_ppo.zip
+eval_csv: outputs/logs/group11_ppo_eval.csv
+train_log: outputs/logs/group11_ppo_train.log

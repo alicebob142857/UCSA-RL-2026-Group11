@@ -1,0 +1,26 @@
+[project]
+name = "ucas-rl-2026-group11"
+version = "0.1.0"
+description = "Group 11 PPO curriculum training for a two-stage balancing robot simulator"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "gymnasium>=0.29",
+    "numpy>=1.24",
+    "pyyaml>=6.0",
+    "scipy>=1.10",
+    "stable-baselines3>=2.3",
+    "torch<2.12",
+    "tqdm>=4.66",
+]
+
+[[tool.uv.index]]
+url = "https://mirrors.bfsu.edu.cn/pypi/web/simple"
+default = true
+
+[build-system]
+requires = ["setuptools==81.0.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
