@@ -13,7 +13,8 @@ UCSA-RL-2026-Group11/
 ├── uv.lock
 ├── configs/
 │   ├── naf_curriculum.yaml
-│   └── ppo_curriculum.yaml
+│   ├── ppo_curriculum.yaml
+│   └── ppo_mlp.yaml
 ├── src/
 │   └── group11_balance/
 │       ├── __init__.py
@@ -52,6 +53,7 @@ UCSA-RL-2026-Group11/
 | Reward 设计 | 已完成初版 | 奖励直立、稳定和平滑控制，惩罚摔倒和过大动作 |
 | LQR baseline | 已完成初版 | 用于验证仿真环境，也用于 PPO / NAF 训练前 warm start |
 | PPO 仿真训练 | 已完成初版 | 使用 Stable-Baselines3 PPO，默认采用线性 actor |
+| PPO MLP 对照实验 | 已完成初版 | 使用非线性的 `[128, 64, 32]` MLP actor |
 | PPO 课程学习 | 已完成初版 | 支持 `easy -> medium -> hard` 难度提升 |
 | PPO 网页可视化 | 已完成初版 | 支持加载模型、浏览器显示仿真、手动加入扰动 |
 | NAF 仿真训练 | 已完成初版 | 自实现 Normalized Advantage Functions，复用共享环境 |
@@ -222,6 +224,61 @@ outputs/models/group11_ppo.zip
 outputs/logs/group11_ppo_eval.csv
 outputs/logs/group11_ppo_train.log
 ```
+
+### 非线性 PPO
+
+为了保留当前线性 PPO 的稳定结果，同时也方便和标准的 PPO 算法进行对比，本仓库额外提供一份 MLP PPO 配置：
+
+```text
+configs/ppo_mlp.yaml
+```
+
+这份配置的关键区别是：
+
+```yaml
+total_steps: 600000
+net_arch: [32, 16]
+lqr_warm_start: true
+lqr_warm_start_steps: 8000
+lqr_warm_start_samples: 32768
+lqr_trajectory_fraction: 0.65
+lqr_exact_linear_init: false
+bc_regularization: true
+```
+
+也就是说，actor 结构为：
+
+```text
+8 维状态 -> 32 -> 16 -> 1 维归一化动作
+```
+
+它和当前默认线性 PPO 使用同一个仿真环境、同一套课程学习逻辑，但模型、日志和评估 CSV 会写入独立路径，不会覆盖 `group11_ppo.zip`。
+
+训练命令：
+
+```bash
+MPLCONFIGDIR=.mpl-cache UV_CACHE_DIR=.uv-cache uv run python -m group11_balance.algorithms.ppo.train \
+  --config configs/ppo_mlp.yaml
+```
+
+默认输出：
+
+```text
+outputs/models/group11_ppo_mlp.zip
+outputs/logs/group11_ppo_mlp_eval.csv
+outputs/logs/group11_ppo_mlp_train.log
+```
+
+最近一次验证结果：
+
+```text
+final_eval_level = hard
+success_rate     = 0.85
+length_mean      = 853.60
+return_mean      = 1531.85
+```
+
+这份 MLP PPO 使用较小的非线性 actor，训练后已经可以推进到 `hard`。导出到 C 头文件时，actor 参数量为 `833` 个 `float32`，约 `3.3 KB`，比大 MLP 更适合嵌入式部署。
 
 ## PPO 课程学习配置
 
@@ -440,6 +497,93 @@ outputs/models/group11_naf.pt
 outputs/logs/group11_naf_eval.csv
 outputs/logs/group11_naf_train.log
 ```
+
+## 模型导出与烧录格式
+
+根据说明文档，最终烧录进 STM32/Keil 工程的是 C 代码格式，通常是一个头文件，例如：
+
+```text
+sb3_policy.h
+linear_policy.h
+tabular_policy.h
+```
+
+核心内容包括：
+
+- `float` 权重数组；
+- `float` bias 数组；
+- 一个 C 语言推理函数；
+- 输入 8 维状态，输出左右轮控制量。
+
+本仓库提供统一导出脚本：
+
+```text
+src/group11_balance/deploy/export_to_c.py
+```
+
+导出 PPO：
+
+```bash
+MPLCONFIGDIR=.mpl-cache UV_CACHE_DIR=.uv-cache uv run python -m group11_balance.deploy.export_to_c \
+  --algo PPO \
+  --model outputs/models/group11_ppo.zip \
+  --output outputs/firmware/group11_ppo_policy.h
+```
+
+导出非线性 PPO：
+
+```bash
+MPLCONFIGDIR=.mpl-cache UV_CACHE_DIR=.uv-cache uv run python -m group11_balance.deploy.export_to_c \
+  --algo PPO \
+  --model outputs/models/group11_ppo_mlp.zip \
+  --output outputs/firmware/group11_ppo_mlp_policy.h
+```
+
+导出 NAF：
+
+```bash
+MPLCONFIGDIR=.mpl-cache UV_CACHE_DIR=.uv-cache uv run python -m group11_balance.deploy.export_to_c \
+  --algo NAF \
+  --model outputs/models/group11_naf.pt \
+  --output outputs/firmware/group11_naf_policy.h
+```
+
+导出的头文件包含统一推理函数：
+
+```c
+static void group11_policy_predict(const float state[8], float action[2]);
+```
+
+其中状态顺序为：
+
+```text
+theta_l, theta_r, theta_l_dot, theta_r_dot,
+body_angle, body_rate, pole_angle, pole_rate
+```
+
+动作输出为：
+
+```text
+action[0] = left wheel physical control
+action[1] = right wheel physical control
+```
+
+当前 PPO 和 NAF 都输出 1 维归一化 common-mode 动作 `a ∈ [-1, 1]`，导出头文件会在 C 端执行：
+
+```text
+u = clip(a, -1, 1) * 200
+action = [u, u]
+```
+
+因此固件侧只需要在 5ms 控制回调里准备好 `state[8]`，调用 `group11_policy_predict(state, action)`，再把 `action[0]`、`action[1]` 接入原来的电机控制链路。
+
+为了兼容常见 SB3 导出函数名，导出的头文件也提供别名：
+
+```c
+static void sb3_predict(const float state[8], float action[2]);
+```
+
+导出脚本会自动做 Python 侧一致性检查，确认导出后的 C 前向逻辑与 Python deterministic actor 的物理动作输出一致。
 
 ## PPO 网页可视化
 

@@ -581,7 +581,10 @@ def train(cfg: TrainConfig) -> None:
         curriculum_callback = CurriculumCallback(cfg, logger)
         callbacks.append(curriculum_callback)
 
-    model.learn(total_timesteps=cfg.total_steps, callback=CallbackList(callbacks), progress_bar=False)
+    if cfg.total_steps > 0:
+        model.learn(total_timesteps=cfg.total_steps, callback=CallbackList(callbacks), progress_bar=False)
+    else:
+        logger.info("skipped PPO updates because total_steps=0")
 
     final_level = cfg.start_level
     if curriculum_callback is not None and curriculum_callback.best_model_path.exists():
@@ -628,6 +631,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--total-steps", dest="total_steps", type=int, default=None)
     parser.add_argument("--learning-rate", dest="learning_rate", type=float, default=None)
+    parser.add_argument("--lr-schedule", dest="lr_schedule", choices=["constant", "linear"], default=None)
+    parser.add_argument("--gamma", type=float, default=None)
+    parser.add_argument("--n-steps", dest="n_steps", type=int, default=None)
+    parser.add_argument("--batch-size", dest="batch_size", type=int, default=None)
+    parser.add_argument("--gae-lambda", dest="gae_lambda", type=float, default=None)
+    parser.add_argument("--clip-range", dest="clip_range", type=float, default=None)
+    parser.add_argument("--ent-coef", dest="ent_coef", type=float, default=None)
+    parser.add_argument("--vf-coef", dest="vf_coef", type=float, default=None)
+    parser.add_argument("--max-grad-norm", dest="max_grad_norm", type=float, default=None)
+    parser.add_argument("--log-std-init", dest="log_std_init", type=float, default=None)
+    parser.add_argument("--target-kl", dest="target_kl", type=float, default=None)
+    parser.add_argument("--net-arch", dest="net_arch", nargs="+", type=int, default=None)
     parser.add_argument("--start-level", dest="start_level", choices=LEVEL_ORDER, default=None)
     parser.add_argument("--max-level", dest="max_level", choices=LEVEL_ORDER, default=None)
     parser.add_argument("--curriculum", dest="curriculum", action="store_true", default=None)
@@ -638,6 +653,27 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--train-log", dest="train_log", default=None)
     parser.add_argument("--lqr-warm-start", dest="lqr_warm_start", action="store_true", default=None)
     parser.add_argument("--no-lqr-warm-start", dest="lqr_warm_start", action="store_false")
+    parser.add_argument("--lqr-warm-start-steps", dest="lqr_warm_start_steps", type=int, default=None)
+    parser.add_argument("--lqr-warm-start-samples", dest="lqr_warm_start_samples", type=int, default=None)
+    parser.add_argument("--lqr-warm-start-batch", dest="lqr_warm_start_batch", type=int, default=None)
+    parser.add_argument("--lqr-warm-start-lr", dest="lqr_warm_start_lr", type=float, default=None)
+    parser.add_argument("--lqr-exact-linear-init", dest="lqr_exact_linear_init", action="store_true", default=None)
+    parser.add_argument("--no-lqr-exact-linear-init", dest="lqr_exact_linear_init", action="store_false")
+    parser.add_argument("--lqr-trajectory-fraction", dest="lqr_trajectory_fraction", type=float, default=None)
+    parser.add_argument("--lqr-rollout-max-steps", dest="lqr_rollout_max_steps", type=int, default=None)
+    parser.add_argument("--promotion-success-rate", dest="promotion_success_rate", type=float, default=None)
+    parser.add_argument("--promotion-patience", dest="promotion_patience", type=int, default=None)
+    parser.add_argument("--promotion-check-freq", dest="promotion_check_freq", type=int, default=None)
+    parser.add_argument("--promotion-eval-episodes", dest="promotion_eval_episodes", type=int, default=None)
+    parser.add_argument("--best-success-gate", dest="best_success_gate", type=float, default=None)
+    parser.add_argument("--eval-episodes", dest="eval_episodes", type=int, default=None)
+    parser.add_argument("--bc-regularization", dest="bc_regularization", action="store_true", default=None)
+    parser.add_argument("--no-bc-regularization", dest="bc_regularization", action="store_false")
+    parser.add_argument("--bc-steps-per-rollout", dest="bc_steps_per_rollout", type=int, default=None)
+    parser.add_argument("--bc-samples-per-level", dest="bc_samples_per_level", type=int, default=None)
+    parser.add_argument("--bc-batch", dest="bc_batch", type=int, default=None)
+    parser.add_argument("--bc-lr", dest="bc_lr", type=float, default=None)
+    parser.add_argument("--bc-log-every-rollouts", dest="bc_log_every_rollouts", type=int, default=None)
     return parser
 
 
