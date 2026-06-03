@@ -1,9 +1,10 @@
-# .venv/
-# .uv-cache/
-# .mpl-cache/
-# __pycache__/
-# *.pyc
-# *.egg-info/
-# outputs/models/*.zip
-# outputs/logs/*.csv
-# outputs/logs/*.log
+.venv/
+.uv-cache/
+.mpl-cache/
+__pycache__/
+*.pyc
+*.egg-info/
+outputs/models/*.zip
+outputs/logs/*.csv
+outputs/logs/*.log
+outputs/models/*.pt
