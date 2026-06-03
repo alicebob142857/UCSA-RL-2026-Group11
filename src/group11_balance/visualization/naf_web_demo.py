@@ -26,6 +26,8 @@ STATE_NAMES = [
     "pole_rate",
 ]
 
+DEMO_MAX_STEPS = 10_000_000
+
 
 HTML = """<!doctype html>
 <html lang="zh-CN">
@@ -80,6 +82,10 @@ async function api(path) {
   const res = await fetch(path);
   if (!res.ok) throw new Error(await res.text());
   current = await res.json();
+  if (current.done) {
+    playing = false;
+    pause.textContent = "Play";
+  }
   draw();
 }
 
@@ -111,27 +117,34 @@ function drawRobot(state) {
   });
 
   const baseX = x;
-  const baseY = wheelY - 20;
-  const bodyLen = 150;
-  const poleLen = 190;
-  const bodyEndX = baseX + Math.sin(body) * bodyLen;
-  const bodyEndY = baseY - Math.cos(body) * bodyLen;
-  const poleEndX = bodyEndX + Math.sin(body + pole) * poleLen;
-  const poleEndY = bodyEndY - Math.cos(body + pole) * poleLen;
+  const baseY = wheelY - 18;
+  const chassisW = 118;
+  const chassisH = 24;
 
-  ctx.lineWidth = 13;
+  ctx.save();
+  ctx.translate(baseX, baseY + 10);
+  ctx.rotate(body);
+  ctx.fillStyle = "#dbeafe";
   ctx.strokeStyle = "#2563eb";
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.rect(-chassisW / 2, -chassisH / 2, chassisW, chassisH);
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
+
+  const poleLen = 275;
+  const poleEndX = baseX + Math.sin(pole) * poleLen;
+  const poleEndY = baseY - Math.cos(pole) * poleLen;
+
+  ctx.lineWidth = 10;
+  ctx.strokeStyle = "#dc2626";
+  ctx.lineCap = "round";
   ctx.beginPath();
   ctx.moveTo(baseX, baseY);
-  ctx.lineTo(bodyEndX, bodyEndY);
-  ctx.stroke();
-
-  ctx.lineWidth = 8;
-  ctx.strokeStyle = "#dc2626";
-  ctx.beginPath();
-  ctx.moveTo(bodyEndX, bodyEndY);
   ctx.lineTo(poleEndX, poleEndY);
   ctx.stroke();
+  ctx.lineCap = "butt";
 
   ctx.fillStyle = "#111827";
   ctx.beginPath();
@@ -154,14 +167,20 @@ async function loop() {
   requestAnimationFrame(loop);
 }
 
+async function playAndApi(path) {
+  playing = true;
+  pause.textContent = "Pause";
+  await api(path);
+}
+
 pause.onclick = () => {
   playing = !playing;
   pause.textContent = playing ? "Pause" : "Play";
 };
-reset.onclick = () => api("/api/reset?level=" + encodeURIComponent(level.value));
-level.onchange = () => api("/api/reset?level=" + encodeURIComponent(level.value));
-document.getElementById("kickSmall").onclick = () => api("/api/disturb?body=0.06&pole=0.04&body_rate=0.4&pole_rate=0.25");
-document.getElementById("kickLarge").onclick = () => api("/api/disturb?body=0.13&pole=0.08&body_rate=0.9&pole_rate=0.6");
+reset.onclick = () => playAndApi("/api/reset?level=" + encodeURIComponent(level.value));
+level.onchange = () => playAndApi("/api/reset?level=" + encodeURIComponent(level.value));
+document.getElementById("kickSmall").onclick = () => playAndApi("/api/disturb?body_angle=0.015&pole_angle=0.015&body_rate=0.08&pole_rate=0.06");
+document.getElementById("kickLarge").onclick = () => playAndApi("/api/disturb?body_angle=0.04&pole_angle=0.035&body_rate=0.25&pole_rate=0.18");
 
 api("/api/reset?level=easy").then(loop);
 </script>
@@ -173,7 +192,7 @@ api("/api/reset?level=easy").then(loop);
 class DemoState:
     def __init__(self, model_path: str, level: str, seed: int):
         self.model = NAFPolicy.load(model_path)
-        self.env = TwoStageBalanceEnv(init_level=level)
+        self.env = make_demo_env(level)
         self.seed = seed
         self.obs, _ = self.env.reset(seed=seed)
         self.reward = 0.0
@@ -182,7 +201,7 @@ class DemoState:
 
     def reset(self, level: str) -> dict:
         with self.lock:
-            self.env = TwoStageBalanceEnv(init_level=level)
+            self.env = make_demo_env(level)
             self.obs, _ = self.env.reset(seed=self.seed)
             self.reward = 0.0
             self.done = False
@@ -195,18 +214,19 @@ class DemoState:
             action, _ = self.model.predict(self.obs, deterministic=True)
             self.obs, reward, terminated, truncated, info = self.env.step(action)
             self.reward += float(reward)
-            self.done = bool(terminated or truncated)
+            self.done = bool(terminated)
             snap = self.snapshot()
             snap["last_info"] = serializable(info)
+            snap["truncated"] = bool(truncated)
             return snap
 
     def disturb(self, params: dict[str, list[str]]) -> dict:
         with self.lock:
             delta = np.zeros(8, dtype=np.float32)
-            delta[4] = float(params.get("body", ["0"])[0])
-            delta[5] = float(params.get("body_rate", ["0"])[0])
-            delta[6] = float(params.get("pole", ["0"])[0])
-            delta[7] = float(params.get("pole_rate", ["0"])[0])
+            delta[4] = query_float(params, "body_angle", "body")
+            delta[5] = query_float(params, "body_rate")
+            delta[6] = query_float(params, "pole_angle", "pole")
+            delta[7] = query_float(params, "pole_rate")
             self.env.state = (self.env.state + delta).astype(np.float32)
             self.obs = self.env._observe()
             self.done = False
@@ -231,6 +251,19 @@ def serializable(info: dict) -> dict:
         else:
             result[key] = value
     return result
+
+
+def make_demo_env(level: str) -> TwoStageBalanceEnv:
+    env = TwoStageBalanceEnv(init_level=level)
+    env.max_steps = DEMO_MAX_STEPS
+    return env
+
+
+def query_float(params: dict[str, list[str]], *names: str, default: float = 0.0) -> float:
+    for name in names:
+        if name in params:
+            return float(params[name][0])
+    return float(default)
 
 
 def make_handler(state: DemoState):
