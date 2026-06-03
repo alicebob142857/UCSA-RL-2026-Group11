@@ -17,6 +17,7 @@ from stable_baselines3 import PPO
 
 from group11_balance.algorithms.naf.model import NAFPolicy
 from group11_balance.sim.env import TwoStageBalanceEnv
+from group11_balance.sim.task import TASK_BALANCE, TASKS, validate_task, validate_target_wheel_velocity
 
 
 SUPPORTED_ACTIVATIONS = {
@@ -129,7 +130,16 @@ def c_vector(name: str, value: np.ndarray) -> list[str]:
     return [f"static const float {name}[{len(value)}] = {{" + ", ".join(c_float(x) for x in value) + "};"]
 
 
-def generate_header(*, layers: list[DenseLayer], algo: str, u_max: float) -> str:
+def generate_header(
+    *,
+    layers: list[DenseLayer],
+    algo: str,
+    u_max: float,
+    task: str = TASK_BALANCE,
+    target_wheel_velocity: float = 0.0,
+) -> str:
+    task = validate_task(task)
+    target_wheel_velocity = validate_target_wheel_velocity(target_wheel_velocity)
     max_width = max(max(layer.weight.shape) for layer in layers)
     param_count = sum(layer.weight.size + layer.bias.size for layer in layers)
     lines = [
@@ -146,6 +156,8 @@ def generate_header(*, layers: list[DenseLayer], algo: str, u_max: float) -> str
         f"#define GROUP11_MAX_WIDTH {max_width}",
         f"#define GROUP11_PARAM_COUNT {param_count}",
         f"#define GROUP11_U_MAX {c_float(u_max)}",
+        f"#define GROUP11_TASK_{task.upper()} 1",
+        f"#define GROUP11_TARGET_WHEEL_VELOCITY {c_float(target_wheel_velocity)}",
         "",
         "/*",
         "state order:",
@@ -155,6 +167,8 @@ def generate_header(*, layers: list[DenseLayer], algo: str, u_max: float) -> str
         "  action[0], action[1] are physical left/right wheel control values.",
         "  The learned actor emits one normalized common-mode action in [-1, 1],",
         "  then this header maps it to [u, u] by multiplying GROUP11_U_MAX.",
+        f"task: {task}",
+        f"target_wheel_velocity_rad_s: {target_wheel_velocity:.6f}",
         "*/",
         "",
     ]
@@ -262,6 +276,8 @@ def main() -> None:
     parser.add_argument("--model", required=True)
     parser.add_argument("--output", default="outputs/firmware/group11_policy.h")
     parser.add_argument("--u-max", type=float, default=200.0)
+    parser.add_argument("--task", choices=TASKS, default=TASK_BALANCE)
+    parser.add_argument("--target-wheel-velocity", dest="target_wheel_velocity", type=float, default=0.0)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--no-check", action="store_true")
     args = parser.parse_args()
@@ -272,7 +288,13 @@ def main() -> None:
         layers = extract_naf_layers(args.model, args.device)
     validate_layers(layers)
 
-    header = generate_header(layers=layers, algo=args.algo, u_max=args.u_max)
+    header = generate_header(
+        layers=layers,
+        algo=args.algo,
+        u_max=args.u_max,
+        task=args.task,
+        target_wheel_velocity=args.target_wheel_velocity,
+    )
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(header, encoding="utf-8")
@@ -282,6 +304,7 @@ def main() -> None:
     print(f"  layers: {[tuple(layer.weight.shape) for layer in layers]}")
     print(f"  activations: {[layer.activation for layer in layers]}, final=clip")
     print(f"  action: normalized common-mode [-1,1] -> physical [u,u], u_max={args.u_max}")
+    print(f"  task: {args.task}, target_wheel_velocity={args.target_wheel_velocity}")
     print(f"  params: {param_count} float32 = {param_count * 4} bytes")
     print("  function: group11_policy_predict(state, action)")
 

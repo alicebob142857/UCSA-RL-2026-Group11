@@ -10,6 +10,7 @@ from urllib.parse import parse_qs, urlparse
 import numpy as np
 
 from group11_balance.sim.env import TwoStageBalanceEnv
+from group11_balance.sim.task import TASK_BALANCE, TASK_VELOCITY, validate_target_wheel_velocity
 
 
 STATE_NAMES = [
@@ -26,7 +27,7 @@ STATE_NAMES = [
 DEMO_MAX_STEPS = 10_000_000
 
 
-def build_html(algorithm_name: str) -> str:
+def build_html(algorithm_name: str, initial_level: str) -> str:
     return f"""<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -87,31 +88,71 @@ async function api(path) {{
   draw();
 }}
 
+function drawGround(ground, distanceM, followCamera) {{
+  const w = canvas.width;
+  const pxPerMeter = 220;
+  const tickM = 0.1;
+  const majorEvery = 5;
+  const cameraLeftM = followCamera ? distanceM - w * 0.5 / pxPerMeter : -w * 0.5 / pxPerMeter;
+  const firstTick = Math.floor(cameraLeftM / tickM) - 1;
+  const lastTick = Math.ceil((cameraLeftM + w / pxPerMeter) / tickM) + 1;
+
+  ctx.fillStyle = "#f8fafc";
+  ctx.fillRect(0, ground, w, canvas.height - ground);
+  ctx.strokeStyle = "#e5e7eb";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(0, ground);
+  ctx.lineTo(w, ground);
+  ctx.stroke();
+
+  ctx.font = "12px Arial, sans-serif";
+  ctx.textBaseline = "top";
+  for (let i = firstTick; i <= lastTick; i++) {{
+    const worldM = i * tickM;
+    const x = (worldM - cameraLeftM) * pxPerMeter;
+    const major = i % majorEvery === 0;
+    ctx.strokeStyle = major ? "#94a3b8" : "#cbd5e1";
+    ctx.lineWidth = major ? 2 : 1;
+    ctx.beginPath();
+    ctx.moveTo(x, ground);
+    ctx.lineTo(x, ground + (major ? 20 : 10));
+    ctx.stroke();
+    if (major) {{
+      ctx.fillStyle = "#64748b";
+      ctx.fillText(worldM.toFixed(1) + "m", x + 4, ground + 24);
+    }}
+  }}
+}}
+
 function drawRobot(state) {{
   const w = canvas.width, h = canvas.height;
   ctx.clearRect(0, 0, w, h);
   ctx.fillStyle = "#ffffff";
   ctx.fillRect(0, 0, w, h);
-  ctx.strokeStyle = "#e5e7eb";
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(0, h * 0.74);
-  ctx.lineTo(w, h * 0.74);
-  ctx.stroke();
 
   const thetaL = state[0], thetaR = state[1];
   const body = state[4], pole = state[6];
-  const x = w * 0.5 + Math.max(-260, Math.min(260, 15 * 0.5 * (thetaL + thetaR)));
+  const followCamera = current && current.task === "velocity";
+  const x = followCamera ? w * 0.5 : w * 0.5 + Math.max(-260, Math.min(260, 15 * 0.5 * (thetaL + thetaR)));
   const ground = h * 0.74;
+  drawGround(ground, Number(current.distance_m || 0), followCamera);
+
   const wheelR = 34;
   const leftX = x - 55, rightX = x + 55;
   const wheelY = ground - wheelR;
 
   ctx.fillStyle = "#374151";
-  [leftX, rightX].forEach(cx => {{
+  [[leftX, thetaL], [rightX, thetaR]].forEach(([cx, theta]) => {{
     ctx.beginPath();
     ctx.arc(cx, wheelY, wheelR, 0, Math.PI * 2);
     ctx.fill();
+    ctx.strokeStyle = "#111827";
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(cx, wheelY);
+    ctx.lineTo(cx + Math.sin(theta) * wheelR * 0.72, wheelY - Math.cos(theta) * wheelR * 0.72);
+    ctx.stroke();
   }});
 
   const baseX = x;
@@ -180,7 +221,8 @@ level.onchange = () => playAndApi("/api/reset?level=" + encodeURIComponent(level
 document.getElementById("kickSmall").onclick = () => playAndApi("/api/disturb?body_angle=0.015&pole_angle=0.015&body_rate=0.08&pole_rate=0.06");
 document.getElementById("kickLarge").onclick = () => playAndApi("/api/disturb?body_angle=0.04&pole_angle=0.035&body_rate=0.25&pole_rate=0.18");
 
-api("/api/reset?level=easy").then(loop);
+level.value = "{initial_level}";
+api("/api/reset?level=" + encodeURIComponent(level.value)).then(loop);
 </script>
 </body>
 </html>
@@ -188,9 +230,11 @@ api("/api/reset?level=easy").then(loop);
 
 
 class DemoState:
-    def __init__(self, model, level: str, seed: int):
+    def __init__(self, model, level: str, seed: int, task: str, target_wheel_velocity: float):
         self.model = model
-        self.env = make_demo_env(level)
+        self.task = task
+        self.target_wheel_velocity = validate_target_wheel_velocity(target_wheel_velocity)
+        self.env = make_demo_env(level, task, self.target_wheel_velocity)
         self.seed = seed
         self.obs, _ = self.env.reset(seed=seed)
         self.reward = 0.0
@@ -199,7 +243,7 @@ class DemoState:
 
     def reset(self, level: str) -> dict:
         with self.lock:
-            self.env = make_demo_env(level)
+            self.env = make_demo_env(level, self.task, self.target_wheel_velocity)
             self.obs, _ = self.env.reset(seed=self.seed)
             self.reward = 0.0
             self.done = False
@@ -231,11 +275,20 @@ class DemoState:
             return self.snapshot()
 
     def snapshot(self) -> dict:
+        wheel_position = 0.5 * float(self.obs[0] + self.obs[1])
+        wheel_velocity = 0.5 * float(self.obs[2] + self.obs[3])
+        distance_m = wheel_position * self.env.constants.wheel_radius_m
         return {
             "state_names": STATE_NAMES,
             "state": [round(float(v), 5) for v in self.obs],
             "steps": self.env.steps,
             "level": self.env.level,
+            "task": self.task,
+            "wheel_position_rad": round(wheel_position, 5),
+            "distance_m": round(distance_m, 5),
+            "target_wheel_velocity": round(self.target_wheel_velocity, 5),
+            "wheel_velocity": round(wheel_velocity, 5),
+            "wheel_velocity_error": round(wheel_velocity - self.target_wheel_velocity, 5),
             "total_reward": round(self.reward, 4),
             "done": self.done,
         }
@@ -251,8 +304,12 @@ def serializable(info: dict) -> dict:
     return result
 
 
-def make_demo_env(level: str) -> TwoStageBalanceEnv:
-    env = TwoStageBalanceEnv(init_level=level)
+def make_demo_env(level: str, task: str, target_wheel_velocity: float) -> TwoStageBalanceEnv:
+    env = TwoStageBalanceEnv(
+        init_level=level,
+        task=task,
+        target_wheel_velocity=target_wheel_velocity,
+    )
     env.max_steps = DEMO_MAX_STEPS
     return env
 
@@ -313,9 +370,17 @@ def serve_policy_demo(
     seed: int,
     host: str,
     port: int,
+    task: str = TASK_BALANCE,
+    target_wheel_velocity: float = 0.0,
 ) -> None:
-    state = DemoState(model, level=level, seed=seed)
-    html = build_html(algorithm_name)
+    state = DemoState(
+        model,
+        level=level,
+        seed=seed,
+        task=task,
+        target_wheel_velocity=target_wheel_velocity,
+    )
+    html = build_html(algorithm_name, initial_level=level)
     server = ThreadingHTTPServer((host, port), make_handler(state, html))
     url = f"http://{host}:{port}/"
     print(f"Serving {algorithm_name} demo at {url}")

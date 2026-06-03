@@ -11,6 +11,8 @@
 #define GROUP11_MAX_WIDTH 8
 #define GROUP11_PARAM_COUNT 9
 #define GROUP11_U_MAX 2.00000000e+02f
+#define GROUP11_TASK_BALANCE 1
+#define GROUP11_TARGET_WHEEL_VELOCITY 0.00000000e+00f
 
 /*
 state order:
@@ -20,6 +22,8 @@ action output:
   action[0], action[1] are physical left/right wheel control values.
   The learned actor emits one normalized common-mode action in [-1, 1],
   then this header maps it to [u, u] by multiplying GROUP11_U_MAX.
+task: balance
+target_wheel_velocity_rad_s: 0.000000
 */
 
 static const float GROUP11_W0[1][8] = {

@@ -13,12 +13,8 @@ max_grad_norm: 0.5
 log_std_init: -1.5
 target_kl: 0.03
 
-# Nonlinear PPO actor:
-# 8-D state -> 32 -> 16 -> 1-D normalized common-mode action.
 net_arch: [32, 16]
 
-# LQR behavior-cloning warm start helps the nonlinear actor begin from a
-# stabilizing controller before PPO exploration updates it online.
 lqr_warm_start: true
 lqr_warm_start_steps: 8000
 lqr_warm_start_samples: 32768
@@ -28,8 +24,8 @@ lqr_exact_linear_init: false
 lqr_trajectory_fraction: 0.65
 lqr_rollout_max_steps: 500
 
-task: balance
-target_wheel_velocity: 0.0
+task: velocity
+target_wheel_velocity: 2.0
 
 start_level: easy
 max_level: hard
@@ -48,6 +44,6 @@ bc_lr: 0.0001
 bc_log_every_rollouts: 10
 
 eval_episodes: 20
-model_path: outputs/models/group11_ppo_mlp.zip
-eval_csv: outputs/logs/group11_ppo_mlp_eval.csv
-train_log: outputs/logs/group11_ppo_mlp_train.log
+model_path: outputs/models/group11_ppo_mlp_velocity.zip
+eval_csv: outputs/logs/group11_ppo_mlp_velocity_eval.csv
+train_log: outputs/logs/group11_ppo_mlp_velocity_train.log

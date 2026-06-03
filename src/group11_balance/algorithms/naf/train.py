@@ -16,8 +16,9 @@ import yaml
 from tqdm.auto import tqdm
 
 from group11_balance.algorithms.naf.model import NAFNetwork, NAFPolicy
-from group11_balance.sim.control import discrete_lqr_gain, lqr_common_normalized_action
-from group11_balance.sim.env import ENV_TO_MODEL, LEVELS, TwoStageBalanceEnv
+from group11_balance.sim.control import lqr_common_affine_policy, lqr_common_normalized_action
+from group11_balance.sim.env import LEVELS, TwoStageBalanceEnv
+from group11_balance.sim.task import TASK_BALANCE, TASK_VELOCITY, TASKS, validate_task, validate_target_wheel_velocity
 
 
 LEVEL_ORDER = ["easy", "medium", "hard"]
@@ -72,6 +73,8 @@ class TrainConfig:
     bc_loss_weight: float = 0.02
     bc_decay_fraction: float = 0.80
     log_interval: int = 5000
+    task: str = TASK_BALANCE
+    target_wheel_velocity: float = 0.0
     device: str = "auto"
 
 
@@ -218,6 +221,8 @@ def merge_config(config: dict[str, Any], args: argparse.Namespace) -> TrainConfi
     for key in ("mu_net_arch", "q_net_arch"):
         if isinstance(values[key], list):
             values[key] = tuple(int(v) for v in values[key])
+    values["task"] = validate_task(values["task"])
+    values["target_wheel_velocity"] = validate_target_wheel_velocity(values["target_wheel_velocity"])
     return TrainConfig(**values)
 
 
@@ -265,41 +270,53 @@ def decayed_bc_weight(cfg: TrainConfig, step: int) -> float:
     return float(cfg.bc_loss_weight * (1.0 - progress))
 
 
-def lqr_common_weights_env_order(action_limit: float = 200.0) -> np.ndarray:
-    k = discrete_lqr_gain()
-    weights_model_order = -np.mean(k, axis=0, dtype=np.float64) / float(action_limit)
-    weights_env_order = np.zeros_like(weights_model_order)
-    weights_env_order[ENV_TO_MODEL] = weights_model_order
-    return weights_env_order.astype(np.float32)
-
-
-def lqr_batch_actions(obs: np.ndarray | torch.Tensor, device: torch.device | None = None) -> torch.Tensor:
-    weights = lqr_common_weights_env_order()
+def lqr_batch_actions(
+    obs: np.ndarray | torch.Tensor,
+    device: torch.device | None = None,
+    *,
+    task: str = TASK_BALANCE,
+    target_wheel_velocity: float = 0.0,
+) -> torch.Tensor:
+    weights, bias = lqr_common_affine_policy(
+        task=task,
+        target_wheel_velocity=target_wheel_velocity,
+    )
     if isinstance(obs, torch.Tensor):
         weight_tensor = torch.as_tensor(weights, dtype=obs.dtype, device=obs.device)
-        return torch.clamp(obs @ weight_tensor, -1.0, 1.0).unsqueeze(1)
+        bias_tensor = torch.as_tensor(bias, dtype=obs.dtype, device=obs.device)
+        return torch.clamp(obs @ weight_tensor + bias_tensor, -1.0, 1.0).unsqueeze(1)
     obs_np = np.asarray(obs, dtype=np.float32)
-    actions = np.clip(obs_np @ weights, -1.0, 1.0).astype(np.float32)
+    actions = np.clip(obs_np @ weights + bias, -1.0, 1.0).astype(np.float32)
     return torch.as_tensor(actions[:, None], dtype=torch.float32, device=device or torch.device("cpu"))
 
 
-def is_success(final_obs: np.ndarray, terminated: bool, steps: int) -> bool:
+def is_success(
+    final_obs: np.ndarray,
+    terminated: bool,
+    steps: int,
+    *,
+    task: str = TASK_BALANCE,
+    target_wheel_velocity: float = 0.0,
+) -> bool:
+    task = validate_task(task)
+    target_wheel_velocity = validate_target_wheel_velocity(target_wheel_velocity)
     body = float(final_obs[4])
     body_rate = float(final_obs[5])
     pole = float(final_obs[6])
     pole_rate = float(final_obs[7])
     wheel_center = 0.5 * float(final_obs[0] + final_obs[1])
     wheel_rate = 0.5 * float(final_obs[2] + final_obs[3])
-    return (
+    posture_ok = (
         not terminated
         and steps >= 1000
         and abs(body) < np.deg2rad(20.0)
         and abs(pole) < np.deg2rad(25.0)
         and abs(body_rate) < 2.0
         and abs(pole_rate) < 3.0
-        and abs(wheel_center) < 15.0
-        and abs(wheel_rate) < 20.0
     )
+    if task == TASK_VELOCITY:
+        return posture_ok and abs(wheel_rate - target_wheel_velocity) < 2.5
+    return posture_ok and abs(wheel_center) < 15.0 and abs(wheel_rate) < 20.0
 
 
 def state_summary(obs: np.ndarray) -> str:
@@ -323,12 +340,18 @@ def evaluate_policy(
     seed: int,
     logger: logging.Logger | None = None,
     tag: str = "eval",
+    task: str = TASK_BALANCE,
+    target_wheel_velocity: float = 0.0,
 ) -> dict[str, float]:
     returns: list[float] = []
     lengths: list[int] = []
     successes = 0
     for ep in range(episodes):
-        env = TwoStageBalanceEnv(init_level=level)
+        env = TwoStageBalanceEnv(
+            init_level=level,
+            task=task,
+            target_wheel_velocity=target_wheel_velocity,
+        )
         obs, _ = env.reset(seed=seed + ep)
         total = 0.0
         terminated = False
@@ -343,17 +366,25 @@ def evaluate_policy(
             obs, reward, terminated, truncated, last_info = env.step(action)
             total += float(reward)
             step_count += 1
-        success = is_success(obs, terminated, step_count)
+        success = is_success(
+            obs,
+            terminated,
+            step_count,
+            task=task,
+            target_wheel_velocity=target_wheel_velocity,
+        )
         returns.append(total)
         lengths.append(step_count)
         successes += int(success)
         if logger is not None:
             logger.info(
-                "%s episode=%d level=%s return=%.3f length=%d success=%s "
+                "%s episode=%d level=%s task=%s target_wheel_velocity=%.3f return=%.3f length=%d success=%s "
                 "terminated=%s truncated=%s reason=%s final_state=[%s]",
                 tag,
                 ep,
                 level,
+                task,
+                target_wheel_velocity,
                 total,
                 step_count,
                 success,
@@ -376,13 +407,19 @@ def sample_teacher_states(
     *,
     trajectory_fraction: float = 0.0,
     rollout_max_steps: int = 500,
+    task: str = TASK_BALANCE,
+    target_wheel_velocity: float = 0.0,
 ) -> np.ndarray:
     rng = np.random.default_rng(seed)
     states = []
     counts = np.full(len(levels), n_samples // len(levels), dtype=np.int64)
     counts[: n_samples % len(levels)] += 1
     for level, count in zip(levels, counts):
-        env = TwoStageBalanceEnv(init_level=level)
+        env = TwoStageBalanceEnv(
+            init_level=level,
+            task=task,
+            target_wheel_velocity=target_wheel_velocity,
+        )
         trajectory_count = int(round(float(count) * np.clip(trajectory_fraction, 0.0, 1.0)))
         reset_count = int(count) - trajectory_count
         for _ in range(reset_count):
@@ -395,25 +432,37 @@ def sample_teacher_states(
                 trajectory_count -= 1
                 if trajectory_count <= 0:
                     break
-                action = lqr_common_normalized_action(obs)
+                action = lqr_common_normalized_action(
+                    obs,
+                    task=task,
+                    target_wheel_velocity=target_wheel_velocity,
+                )
                 obs, _, terminated, truncated, _ = env.step(action)
                 if terminated or truncated:
                     break
     return np.asarray(states, dtype=np.float32)
 
 
-def assign_linear_lqr_mu(agent: NAFAgent) -> bool:
+def assign_linear_lqr_mu(
+    agent: NAFAgent,
+    *,
+    task: str = TASK_BALANCE,
+    target_wheel_velocity: float = 0.0,
+) -> bool:
     if len(agent.online.mu_net) != 1:
         return False
     layer = agent.online.mu_net[0]
     if not isinstance(layer, torch.nn.Linear):
         return False
-    weights = lqr_common_weights_env_order()
+    weights, bias = lqr_common_affine_policy(
+        task=task,
+        target_wheel_velocity=target_wheel_velocity,
+    )
     if layer.weight.shape != (1, len(weights)):
         return False
     with torch.no_grad():
         layer.weight.copy_(torch.as_tensor(weights[None, :], dtype=layer.weight.dtype, device=layer.weight.device))
-        layer.bias.zero_()
+        layer.bias.fill_(bias)
     agent.target.load_state_dict(agent.online.state_dict())
     return True
 
@@ -429,6 +478,8 @@ def clone_mu_from_lqr(
     seed: int,
     trajectory_fraction: float,
     rollout_max_steps: int,
+    task: str = TASK_BALANCE,
+    target_wheel_velocity: float = 0.0,
 ) -> tuple[float, int]:
     if steps <= 0 or n_samples <= 0:
         return 0.0, 0
@@ -438,8 +489,15 @@ def clone_mu_from_lqr(
         seed=seed,
         trajectory_fraction=trajectory_fraction,
         rollout_max_steps=rollout_max_steps,
+        task=task,
+        target_wheel_velocity=target_wheel_velocity,
     )
-    targets = lqr_batch_actions(states, device=agent.device)
+    targets = lqr_batch_actions(
+        states,
+        device=agent.device,
+        task=task,
+        target_wheel_velocity=target_wheel_velocity,
+    )
     obs_tensor = torch.as_tensor(states, dtype=torch.float32, device=agent.device)
     optimizer = torch.optim.Adam(agent.online.mu_net.parameters(), lr=lr)
     batch = min(batch_size, len(states))
@@ -460,7 +518,11 @@ def warm_start_mu_from_lqr(agent: NAFAgent, cfg: TrainConfig, logger: logging.Lo
     if not cfg.lqr_warm_start or cfg.lqr_warm_start_steps <= 0:
         logger.info("LQR warm start disabled")
         return
-    if cfg.lqr_exact_linear_init and assign_linear_lqr_mu(agent):
+    if cfg.lqr_exact_linear_init and assign_linear_lqr_mu(
+        agent,
+        task=cfg.task,
+        target_wheel_velocity=cfg.target_wheel_velocity,
+    ):
         logger.info("LQR exact linear mu initialization finished")
         return
 
@@ -475,6 +537,8 @@ def warm_start_mu_from_lqr(agent: NAFAgent, cfg: TrainConfig, logger: logging.Lo
         seed=cfg.seed + 700_000,
         trajectory_fraction=cfg.lqr_trajectory_fraction,
         rollout_max_steps=cfg.lqr_rollout_max_steps,
+        task=cfg.task,
+        target_wheel_velocity=cfg.target_wheel_velocity,
     )
     logger.info(
         "LQR mu warm start finished levels=%s samples=%d steps=%d batch=%d "
@@ -497,11 +561,19 @@ def prefill_replay(agent: NAFAgent, buffer: ReplayBuffer, cfg: TrainConfig, logg
     counts = np.full(len(levels), cfg.prefill_steps // len(levels), dtype=np.int64)
     counts[: cfg.prefill_steps % len(levels)] += 1
     for level, count in zip(levels, counts):
-        env = TwoStageBalanceEnv(init_level=level)
+        env = TwoStageBalanceEnv(
+            init_level=level,
+            task=cfg.task,
+            target_wheel_velocity=cfg.target_wheel_velocity,
+        )
         obs, _ = env.reset(seed=int(rng.integers(0, 2**31 - 1)))
         for _ in range(int(count)):
             if cfg.prefill_policy == "lqr":
-                action = lqr_common_normalized_action(obs)
+                action = lqr_common_normalized_action(
+                    obs,
+                    task=cfg.task,
+                    target_wheel_velocity=cfg.target_wheel_velocity,
+                )
             elif cfg.prefill_policy == "agent":
                 action = agent.act(obs, noise_std=0.0)
             elif cfg.prefill_policy == "random":
@@ -567,7 +639,11 @@ def train(cfg: TrainConfig) -> None:
     logger.info("training config=%s", cfg)
     logger.info("device=%s", device)
 
-    probe_env = TwoStageBalanceEnv(init_level=cfg.start_level)
+    probe_env = TwoStageBalanceEnv(
+        init_level=cfg.start_level,
+        task=cfg.task,
+        target_wheel_velocity=cfg.target_wheel_velocity,
+    )
     obs_dim = int(probe_env.observation_space.shape[0])
     action_dim = int(probe_env.action_space.shape[0])
     agent = NAFAgent(obs_dim, action_dim, cfg, device)
@@ -613,6 +689,8 @@ def train(cfg: TrainConfig) -> None:
             seed=cfg.seed + 90_000 + 1000 * level_index(level),
             logger=logger,
             tag=f"warm_start_eval_{level}",
+            task=cfg.task,
+            target_wheel_velocity=cfg.target_wheel_velocity,
         )
         logger.info(
             "warm-start candidate level=%s success=%.3f return=%.3f length=%.3f",
@@ -624,7 +702,11 @@ def train(cfg: TrainConfig) -> None:
         maybe_save_best(level, 0, metrics, "warm-start")
 
     rng = np.random.default_rng(cfg.seed + 1000)
-    env = TwoStageBalanceEnv(init_level=cfg.start_level)
+    env = TwoStageBalanceEnv(
+        init_level=cfg.start_level,
+        task=cfg.task,
+        target_wheel_velocity=cfg.target_wheel_velocity,
+    )
     obs, _ = env.reset(seed=cfg.seed)
     current_level = cfg.start_level
     reached_level = cfg.start_level
@@ -679,7 +761,15 @@ def train(cfg: TrainConfig) -> None:
                 for _ in range(cfg.gradient_steps):
                     batch = buffer.sample(cfg.batch_size, device)
                     bc_weight = decayed_bc_weight(cfg, step)
-                    teacher_actions = lqr_batch_actions(batch["obs"]) if bc_weight > 0.0 else None
+                    teacher_actions = (
+                        lqr_batch_actions(
+                            batch["obs"],
+                            task=cfg.task,
+                            target_wheel_velocity=cfg.target_wheel_velocity,
+                        )
+                        if bc_weight > 0.0
+                        else None
+                    )
                     last_update = agent.update(batch, bc_weight=bc_weight, teacher_actions=teacher_actions)
 
             if step % cfg.log_interval == 0:
@@ -704,6 +794,8 @@ def train(cfg: TrainConfig) -> None:
                     seed=cfg.seed + 100_000 + step,
                     logger=logger,
                     tag=f"curriculum_check_step_{step}",
+                    task=cfg.task,
+                    target_wheel_velocity=cfg.target_wheel_velocity,
                 )
                 logger.info(
                     "curriculum check step=%d level=%s success=%.3f return=%.3f length=%.3f",
@@ -763,12 +855,16 @@ def train(cfg: TrainConfig) -> None:
         seed=cfg.seed + 900_000,
         logger=logger,
         tag="final_eval",
+        task=cfg.task,
+        target_wheel_velocity=cfg.target_wheel_velocity,
     )
     row = {
         "algorithm": "NAF",
         "total_steps": cfg.total_steps,
         "mu_net_arch": "-".join(str(v) for v in cfg.mu_net_arch),
         "q_net_arch": "-".join(str(v) for v in cfg.q_net_arch),
+        "task": cfg.task,
+        "target_wheel_velocity": cfg.target_wheel_velocity,
         "start_level": cfg.start_level,
         "final_eval_level": final_level,
         "curriculum": cfg.curriculum,
@@ -784,14 +880,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--total-steps", dest="total_steps", type=int, default=None)
     parser.add_argument("--learning-rate", dest="learning_rate", type=float, default=None)
+    parser.add_argument("--batch-size", dest="batch_size", type=int, default=None)
+    parser.add_argument("--learning-starts", dest="learning_starts", type=int, default=None)
     parser.add_argument("--start-level", dest="start_level", choices=LEVEL_ORDER, default=None)
     parser.add_argument("--max-level", dest="max_level", choices=LEVEL_ORDER, default=None)
+    parser.add_argument("--task", choices=TASKS, default=None)
+    parser.add_argument("--target-wheel-velocity", dest="target_wheel_velocity", type=float, default=None)
     parser.add_argument("--curriculum", dest="curriculum", action="store_true", default=None)
     parser.add_argument("--no-curriculum", dest="curriculum", action="store_false")
     parser.add_argument("--device", default=None)
     parser.add_argument("--model-path", dest="model_path", default=None)
     parser.add_argument("--eval-csv", dest="eval_csv", default=None)
     parser.add_argument("--train-log", dest="train_log", default=None)
+    parser.add_argument("--eval-episodes", dest="eval_episodes", type=int, default=None)
+    parser.add_argument("--promotion-eval-episodes", dest="promotion_eval_episodes", type=int, default=None)
     parser.add_argument("--lqr-warm-start", dest="lqr_warm_start", action="store_true", default=None)
     parser.add_argument("--no-lqr-warm-start", dest="lqr_warm_start", action="store_false")
     parser.add_argument("--prefill-steps", dest="prefill_steps", type=int, default=None)

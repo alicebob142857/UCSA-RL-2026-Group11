@@ -21,8 +21,8 @@ exploration_noise: 0.08
 exploration_noise_final: 0.015
 exploration_fraction: 0.70
 
-task: balance
-target_wheel_velocity: 0.0
+task: velocity
+target_wheel_velocity: 2.0
 
 start_level: easy
 max_level: hard
@@ -51,6 +51,6 @@ bc_loss_weight: 0.02
 bc_decay_fraction: 0.80
 
 eval_episodes: 20
-model_path: outputs/models/group11_naf.pt
-eval_csv: outputs/logs/group11_naf_eval.csv
-train_log: outputs/logs/group11_naf_train.log
+model_path: outputs/models/group11_naf_velocity.pt
+eval_csv: outputs/logs/group11_naf_velocity_eval.csv
+train_log: outputs/logs/group11_naf_velocity_train.log

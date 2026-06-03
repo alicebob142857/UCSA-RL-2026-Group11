@@ -13,8 +13,11 @@ UCSA-RL-2026-Group11/
 ├── uv.lock
 ├── configs/
 │   ├── naf_curriculum.yaml
+│   ├── naf_velocity.yaml
 │   ├── ppo_curriculum.yaml
-│   └── ppo_mlp.yaml
+│   ├── ppo_mlp.yaml
+│   ├── ppo_mlp_velocity.yaml
+│   └── ppo_velocity.yaml
 ├── src/
 │   └── group11_balance/
 │       ├── __init__.py
@@ -26,7 +29,8 @@ UCSA-RL-2026-Group11/
 │       │   ├── control.py                # LQR 教师控制器、baseline 与 warm start
 │       │   ├── dynamics.py
 │       │   ├── env.py
-│       │   └── reward.py
+│       │   ├── reward.py
+│       │   └── task.py                   # balance / velocity 任务定义
 │       ├── algorithms/
 │       │   ├── naf/
 │       │   │   ├── __init__.py
@@ -35,11 +39,16 @@ UCSA-RL-2026-Group11/
 │       │   └── ppo/
 │       │       ├── __init__.py
 │       │       └── train.py
+│       ├── deploy/
+│       │   ├── __init__.py
+│       │   └── export_to_c.py
 │       └── visualization/
 │           ├── __init__.py
 │           ├── naf_web_demo.py
+│           ├── policy_web_demo.py
 │           └── web_demo.py
 └── outputs/
+    ├── firmware/
     ├── logs/
     └── models/
 ```
@@ -48,12 +57,12 @@ UCSA-RL-2026-Group11/
 
 | 模块 | 状态 | 说明 |
 |---|---|---|
-| 共享仿真环境 | 已完成初版 | `TwoStageBalanceEnv`，供不同算法复用 |
+| 共享仿真环境 | 已完成初版 | `TwoStageBalanceEnv`，供不同算法复用，支持 `balance` / `velocity` 两个任务 |
 | 动力学模型 | 已完成初版 | 使用离散线性状态空间模型 |
 | Reward 设计 | 已完成初版 | 奖励直立、稳定和平滑控制，惩罚摔倒和过大动作 |
 | LQR baseline | 已完成初版 | 用于验证仿真环境，也用于 PPO / NAF 训练前 warm start |
 | PPO 仿真训练 | 已完成初版 | 使用 Stable-Baselines3 PPO，默认采用线性 actor |
-| PPO MLP 对照实验 | 已完成初版 | 使用非线性的 `[128, 64, 32]` MLP actor |
+| PPO MLP 对照实验 | 已完成初版 | 使用非线性的 `[32, 16]` MLP actor |
 | PPO 课程学习 | 已完成初版 | 支持 `easy -> medium -> hard` 难度提升 |
 | PPO 网页可视化 | 已完成初版 | 支持加载模型、浏览器显示仿真、手动加入扰动 |
 | NAF 仿真训练 | 已完成初版 | 自实现 Normalized Advantage Functions，复用共享环境 |
@@ -91,7 +100,8 @@ src/group11_balance/sim/
 - `dynamics.py`：构建二阶平衡车线性动力学模型；
 - `env.py`：定义 Gymnasium 仿真环境；
 - `control.py`：定义 LQR 教师控制器，可用于 baseline、PPO warm start 和 NAF warm start；
-- `reward.py`：定义平衡任务奖励函数。
+- `reward.py`：定义平衡与匀速任务奖励函数；
+- `task.py`：定义 `balance`、`velocity` 任务名与目标轮速检查。
 
 后续其他算法，例如 NAF、SAC、TD3、DDPG，应优先复用这里的 `TwoStageBalanceEnv`，避免每个算法重复写一套环境。
 
@@ -151,6 +161,33 @@ a ∈ [-1, 1]
 ```
 
 该设计用于降低训练难度，使策略优先学习前后方向平衡，而不是学习左右轮差速转向。
+
+## 任务设置
+
+当前环境支持两个任务，通过训练和可视化命令中的 `--task` 或配置文件字段选择：
+
+```text
+balance   原地平衡，目标是保持直立、速度接近 0、轮子不漂离中心
+velocity  平衡匀速运动，目标是在保持直立的同时跟踪固定平均轮速
+```
+
+`velocity` 任务的目标轮速由 `target_wheel_velocity` / `--target-wheel-velocity` 指定，单位是 rad/s。当前配置默认使用固定目标：
+
+```yaml
+task: velocity
+target_wheel_velocity: 2.0
+```
+
+注意：状态观测仍然保持 8 维，目标速度不会作为第 9 维输入策略。因此一个训练好的 `velocity` 模型默认只对应训练时指定的固定目标速度；如果要换目标速度，建议重新训练并另存一份模型。
+
+常用可选参数：
+
+- `--task balance|velocity`：选择原地平衡或平衡匀速运动；
+- `--target-wheel-velocity 2.0`：设置匀速任务目标平均轮速；
+- `--start-level easy|medium|hard` / `--max-level easy|medium|hard`：设置课程学习难度范围；
+- `--total-steps`：训练总步数；
+- `--model-path` / `--eval-csv` / `--train-log`：指定输出路径，避免覆盖已有模型和日志；
+- `--eval-episodes` / `--promotion-eval-episodes`：覆盖最终评估和课程评估 episode 数，用于 smoke test 时缩短运行时间。
 
 ## PPO 模块
 
@@ -217,12 +254,39 @@ MPLCONFIGDIR=.mpl-cache UV_CACHE_DIR=.uv-cache uv run python -m group11_balance.
   --config configs/ppo_curriculum.yaml
 ```
 
-正式训练默认输出：
+线性 PPO 匀速平衡训练：
+
+```bash
+MPLCONFIGDIR=.mpl-cache UV_CACHE_DIR=.uv-cache uv run python -m group11_balance.algorithms.ppo.train \
+  --config configs/ppo_velocity.yaml
+```
+
+也可以直接覆盖任务参数和输出路径：
+
+```bash
+MPLCONFIGDIR=.mpl-cache UV_CACHE_DIR=.uv-cache uv run python -m group11_balance.algorithms.ppo.train \
+  --config configs/ppo_curriculum.yaml \
+  --task velocity \
+  --target-wheel-velocity 2.0 \
+  --model-path outputs/models/group11_ppo_velocity.zip \
+  --eval-csv outputs/logs/group11_ppo_velocity_eval.csv \
+  --train-log outputs/logs/group11_ppo_velocity_train.log
+```
+
+原地平衡正式训练默认输出：
 
 ```text
 outputs/models/group11_ppo.zip
 outputs/logs/group11_ppo_eval.csv
 outputs/logs/group11_ppo_train.log
+```
+
+线性 PPO 匀速平衡正式训练默认输出：
+
+```text
+outputs/models/group11_ppo_velocity.zip
+outputs/logs/group11_ppo_velocity_eval.csv
+outputs/logs/group11_ppo_velocity_train.log
 ```
 
 ### 非线性 PPO
@@ -261,12 +325,27 @@ MPLCONFIGDIR=.mpl-cache UV_CACHE_DIR=.uv-cache uv run python -m group11_balance.
   --config configs/ppo_mlp.yaml
 ```
 
-默认输出：
+非线性 PPO 匀速平衡训练：
+
+```bash
+MPLCONFIGDIR=.mpl-cache UV_CACHE_DIR=.uv-cache uv run python -m group11_balance.algorithms.ppo.train \
+  --config configs/ppo_mlp_velocity.yaml
+```
+
+原地平衡默认输出：
 
 ```text
 outputs/models/group11_ppo_mlp.zip
 outputs/logs/group11_ppo_mlp_eval.csv
 outputs/logs/group11_ppo_mlp_train.log
+```
+
+匀速平衡默认输出：
+
+```text
+outputs/models/group11_ppo_mlp_velocity.zip
+outputs/logs/group11_ppo_mlp_velocity_eval.csv
+outputs/logs/group11_ppo_mlp_velocity_train.log
 ```
 
 最近一次验证结果：
@@ -286,6 +365,9 @@ return_mean      = 1531.85
 
 ```text
 configs/ppo_curriculum.yaml
+configs/ppo_velocity.yaml
+configs/ppo_mlp.yaml
+configs/ppo_mlp_velocity.yaml
 ```
 
 当前训练难度：
@@ -304,6 +386,8 @@ easy -> medium -> hard
 当前关键配置：
 
 ```yaml
+task: balance
+target_wheel_velocity: 0.0
 net_arch: []
 lqr_warm_start: true
 lqr_exact_linear_init: true
@@ -431,12 +515,39 @@ MPLCONFIGDIR=.mpl-cache UV_CACHE_DIR=.uv-cache uv run python -m group11_balance.
   --config configs/naf_curriculum.yaml
 ```
 
-正式训练默认输出：
+NAF 匀速平衡训练：
+
+```bash
+MPLCONFIGDIR=.mpl-cache UV_CACHE_DIR=.uv-cache uv run python -m group11_balance.algorithms.naf.train \
+  --config configs/naf_velocity.yaml
+```
+
+也可以直接覆盖任务参数和输出路径：
+
+```bash
+MPLCONFIGDIR=.mpl-cache UV_CACHE_DIR=.uv-cache uv run python -m group11_balance.algorithms.naf.train \
+  --config configs/naf_curriculum.yaml \
+  --task velocity \
+  --target-wheel-velocity 2.0 \
+  --model-path outputs/models/group11_naf_velocity.pt \
+  --eval-csv outputs/logs/group11_naf_velocity_eval.csv \
+  --train-log outputs/logs/group11_naf_velocity_train.log
+```
+
+原地平衡正式训练默认输出：
 
 ```text
 outputs/models/group11_naf.pt
 outputs/logs/group11_naf_eval.csv
 outputs/logs/group11_naf_train.log
+```
+
+NAF 匀速平衡正式训练默认输出：
+
+```text
+outputs/models/group11_naf_velocity.pt
+outputs/logs/group11_naf_velocity_eval.csv
+outputs/logs/group11_naf_velocity_train.log
 ```
 
 ## NAF 课程学习配置
@@ -445,6 +556,7 @@ outputs/logs/group11_naf_train.log
 
 ```text
 configs/naf_curriculum.yaml
+configs/naf_velocity.yaml
 ```
 
 当前训练难度：
@@ -463,6 +575,8 @@ easy -> medium -> hard
 当前关键配置：
 
 ```yaml
+task: balance
+target_wheel_velocity: 0.0
 mu_net_arch: []
 q_net_arch: [128, 64]
 lqr_warm_start: true
@@ -539,6 +653,28 @@ MPLCONFIGDIR=.mpl-cache UV_CACHE_DIR=.uv-cache uv run python -m group11_balance.
   --output outputs/firmware/group11_ppo_mlp_policy.h
 ```
 
+导出线性 PPO 匀速模型：
+
+```bash
+MPLCONFIGDIR=.mpl-cache UV_CACHE_DIR=.uv-cache uv run python -m group11_balance.deploy.export_to_c \
+  --algo PPO \
+  --model outputs/models/group11_ppo_velocity.zip \
+  --output outputs/firmware/group11_ppo_velocity_policy.h \
+  --task velocity \
+  --target-wheel-velocity 2.0
+```
+
+导出非线性 PPO 匀速模型：
+
+```bash
+MPLCONFIGDIR=.mpl-cache UV_CACHE_DIR=.uv-cache uv run python -m group11_balance.deploy.export_to_c \
+  --algo PPO \
+  --model outputs/models/group11_ppo_mlp_velocity.zip \
+  --output outputs/firmware/group11_ppo_mlp_velocity_policy.h \
+  --task velocity \
+  --target-wheel-velocity 2.0
+```
+
 导出 NAF：
 
 ```bash
@@ -546,6 +682,17 @@ MPLCONFIGDIR=.mpl-cache UV_CACHE_DIR=.uv-cache uv run python -m group11_balance.
   --algo NAF \
   --model outputs/models/group11_naf.pt \
   --output outputs/firmware/group11_naf_policy.h
+```
+
+导出 NAF 匀速模型：
+
+```bash
+MPLCONFIGDIR=.mpl-cache UV_CACHE_DIR=.uv-cache uv run python -m group11_balance.deploy.export_to_c \
+  --algo NAF \
+  --model outputs/models/group11_naf_velocity.pt \
+  --output outputs/firmware/group11_naf_velocity_policy.h \
+  --task velocity \
+  --target-wheel-velocity 2.0
 ```
 
 导出的头文件包含统一推理函数：
@@ -584,6 +731,7 @@ static void sb3_predict(const float state[8], float action[2]);
 ```
 
 导出脚本会自动做 Python 侧一致性检查，确认导出后的 C 前向逻辑与 Python deterministic actor 的物理动作输出一致。
+对于 `velocity` 模型，目标速度不是额外输入，而是训练时固定在策略权重里的行为；导出头文件会额外写入 `GROUP11_TASK_VELOCITY` 和 `GROUP11_TARGET_WHEEL_VELOCITY` 作为烧录侧识别信息。
 
 ## PPO 网页可视化
 
@@ -592,14 +740,65 @@ static void sb3_predict(const float state[8], float action[2]);
 ```bash
 MPLCONFIGDIR=.mpl-cache UV_CACHE_DIR=.uv-cache uv run python -m group11_balance.visualization.web_demo \
   --model outputs/models/group11_ppo.zip \
+  --task balance \
   --level easy \
   --port 8848
 ```
 
-然后在浏览器打开：
+对应网址：
 
 ```text
 http://127.0.0.1:8848/
+```
+
+PPO 匀速平衡可视化：
+
+```bash
+MPLCONFIGDIR=.mpl-cache UV_CACHE_DIR=.uv-cache uv run python -m group11_balance.visualization.web_demo \
+  --model outputs/models/group11_ppo_velocity.zip \
+  --task velocity \
+  --target-wheel-velocity 2.0 \
+  --level easy \
+  --port 8851
+```
+
+对应网址：
+
+```text
+http://127.0.0.1:8851/
+```
+
+非线性 PPO 平衡可视化：
+
+```bash
+MPLCONFIGDIR=.mpl-cache UV_CACHE_DIR=.uv-cache uv run python -m group11_balance.visualization.web_demo \
+  --model outputs/models/group11_ppo_mlp.zip \
+  --task balance \
+  --level easy \
+  --port 8853
+```
+
+对应网址：
+
+```text
+http://127.0.0.1:8853/
+```
+
+非线性 PPO 匀速平衡可视化只需替换模型路径：
+
+```bash
+MPLCONFIGDIR=.mpl-cache UV_CACHE_DIR=.uv-cache uv run python -m group11_balance.visualization.web_demo \
+  --model outputs/models/group11_ppo_mlp_velocity.zip \
+  --task velocity \
+  --target-wheel-velocity 2.0 \
+  --level easy \
+  --port 8854
+```
+
+对应网址：
+
+```text
+http://127.0.0.1:8854/
 ```
 
 网页支持：
@@ -610,6 +809,8 @@ http://127.0.0.1:8848/
 - 添加小扰动；
 - 添加大扰动；
 - 查看当前状态、步数、累计 reward 和是否失败。
+
+`velocity` 任务下网页使用跟随视角，车辆会保持在画面中间；地面刻度会随真实位移滚动，车轮也会显示旋转标记。真实轮角、行驶距离 `distance_m`、平均轮速和速度误差会显示在状态 JSON 中。
 
 这个工具用于训练后直观测试模型抗干扰能力。若模型刚训练很少步，遇到扰动后摔倒是正常现象。
 
@@ -620,14 +821,32 @@ http://127.0.0.1:8848/
 ```bash
 MPLCONFIGDIR=.mpl-cache UV_CACHE_DIR=.uv-cache uv run python -m group11_balance.visualization.naf_web_demo \
   --model outputs/models/group11_naf.pt \
+  --task balance \
   --level easy \
   --port 8849
 ```
 
-然后在浏览器打开：
+对应网址：
 
 ```text
 http://127.0.0.1:8849/
+```
+
+NAF 匀速平衡可视化：
+
+```bash
+MPLCONFIGDIR=.mpl-cache UV_CACHE_DIR=.uv-cache uv run python -m group11_balance.visualization.naf_web_demo \
+  --model outputs/models/group11_naf_velocity.pt \
+  --task velocity \
+  --target-wheel-velocity 2.0 \
+  --level easy \
+  --port 8852
+```
+
+对应网址：
+
+```text
+http://127.0.0.1:8852/
 ```
 
 网页支持：
@@ -638,6 +857,8 @@ http://127.0.0.1:8849/
 - 添加小扰动；
 - 添加大扰动；
 - 查看当前状态、步数、累计 reward 和是否失败。
+
+`velocity` 任务下网页使用跟随视角，车辆会保持在画面中间；地面刻度会随真实位移滚动，车轮也会显示旋转标记。真实轮角、行驶距离 `distance_m`、平均轮速和速度误差会显示在状态 JSON 中。
 
 这个工具用于训练后直观测试 NAF 模型抗干扰能力。若模型刚训练很少步，遇到大扰动后摔倒是正常现象。
 

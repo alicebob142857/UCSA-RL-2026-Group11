@@ -22,8 +22,9 @@ from stable_baselines3.common.callbacks import BaseCallback, CallbackList
 from stable_baselines3.common.monitor import Monitor
 from tqdm.auto import tqdm
 
-from group11_balance.sim.control import discrete_lqr_gain, lqr_common_normalized_action
-from group11_balance.sim.env import ENV_TO_MODEL, LEVELS, TwoStageBalanceEnv
+from group11_balance.sim.control import lqr_common_affine_policy, lqr_common_normalized_action
+from group11_balance.sim.env import LEVELS, TwoStageBalanceEnv
+from group11_balance.sim.task import TASK_BALANCE, TASK_VELOCITY, TASKS, validate_task, validate_target_wheel_velocity
 
 
 LEVEL_ORDER = ["easy", "medium", "hard"]
@@ -72,6 +73,8 @@ class TrainConfig:
     bc_batch: int = 256
     bc_lr: float = 3e-4
     bc_log_every_rollouts: int = 10
+    task: str = TASK_BALANCE
+    target_wheel_velocity: float = 0.0
     device: str = "auto"
 
 
@@ -104,11 +107,23 @@ def merge_config(config: dict[str, Any], args: argparse.Namespace) -> TrainConfi
             values[key] = override
     if isinstance(values["net_arch"], list):
         values["net_arch"] = tuple(int(v) for v in values["net_arch"])
+    values["task"] = validate_task(values["task"])
+    values["target_wheel_velocity"] = validate_target_wheel_velocity(values["target_wheel_velocity"])
     return TrainConfig(**values)
 
 
-def make_env(level: str, seed: int | None = None):
-    env = TwoStageBalanceEnv(init_level=level)
+def make_env(
+    level: str,
+    seed: int | None = None,
+    *,
+    task: str = TASK_BALANCE,
+    target_wheel_velocity: float = 0.0,
+):
+    env = TwoStageBalanceEnv(
+        init_level=level,
+        task=task,
+        target_wheel_velocity=target_wheel_velocity,
+    )
     if seed is not None:
         env.reset(seed=seed)
     return Monitor(env)
@@ -128,23 +143,33 @@ def level_index(level: str) -> int:
     return LEVEL_ORDER.index(level)
 
 
-def is_success(final_obs: np.ndarray, terminated: bool, steps: int) -> bool:
+def is_success(
+    final_obs: np.ndarray,
+    terminated: bool,
+    steps: int,
+    *,
+    task: str = TASK_BALANCE,
+    target_wheel_velocity: float = 0.0,
+) -> bool:
+    task = validate_task(task)
+    target_wheel_velocity = validate_target_wheel_velocity(target_wheel_velocity)
     body = float(final_obs[4])
     body_rate = float(final_obs[5])
     pole = float(final_obs[6])
     pole_rate = float(final_obs[7])
     wheel_center = 0.5 * float(final_obs[0] + final_obs[1])
     wheel_rate = 0.5 * float(final_obs[2] + final_obs[3])
-    return (
+    posture_ok = (
         not terminated
         and steps >= 1000
         and abs(body) < np.deg2rad(20.0)
         and abs(pole) < np.deg2rad(25.0)
         and abs(body_rate) < 2.0
         and abs(pole_rate) < 3.0
-        and abs(wheel_center) < 15.0
-        and abs(wheel_rate) < 20.0
     )
+    if task == TASK_VELOCITY:
+        return posture_ok and abs(wheel_rate - target_wheel_velocity) < 2.5
+    return posture_ok and abs(wheel_center) < 15.0 and abs(wheel_rate) < 20.0
 
 
 def state_summary(obs: np.ndarray) -> str:
@@ -168,12 +193,18 @@ def evaluate_policy(
     seed: int,
     logger: logging.Logger | None = None,
     tag: str = "eval",
+    task: str = TASK_BALANCE,
+    target_wheel_velocity: float = 0.0,
 ) -> dict[str, float]:
     returns: list[float] = []
     lengths: list[int] = []
     successes = 0
     for ep in range(episodes):
-        env = TwoStageBalanceEnv(init_level=level)
+        env = TwoStageBalanceEnv(
+            init_level=level,
+            task=task,
+            target_wheel_velocity=target_wheel_velocity,
+        )
         obs, _ = env.reset(seed=seed + ep)
         total = 0.0
         terminated = False
@@ -185,17 +216,25 @@ def evaluate_policy(
             obs, reward, terminated, truncated, last_info = env.step(action)
             total += float(reward)
             step_count += 1
-        success = is_success(obs, terminated, step_count)
+        success = is_success(
+            obs,
+            terminated,
+            step_count,
+            task=task,
+            target_wheel_velocity=target_wheel_velocity,
+        )
         returns.append(total)
         lengths.append(step_count)
         successes += int(success)
         if logger is not None:
             logger.info(
-                "%s episode=%d level=%s return=%.3f length=%d success=%s "
+                "%s episode=%d level=%s task=%s target_wheel_velocity=%.3f return=%.3f length=%d success=%s "
                 "terminated=%s truncated=%s reason=%s final_state=[%s]",
                 tag,
                 ep,
                 level,
+                task,
+                target_wheel_velocity,
                 total,
                 step_count,
                 success,
@@ -226,13 +265,19 @@ def sample_teacher_states(
     *,
     trajectory_fraction: float = 0.0,
     rollout_max_steps: int = 500,
+    task: str = TASK_BALANCE,
+    target_wheel_velocity: float = 0.0,
 ) -> np.ndarray:
     rng = np.random.default_rng(seed)
     states = []
     counts = np.full(len(levels), n_samples // len(levels), dtype=np.int64)
     counts[: n_samples % len(levels)] += 1
     for level, count in zip(levels, counts):
-        env = TwoStageBalanceEnv(init_level=level)
+        env = TwoStageBalanceEnv(
+            init_level=level,
+            task=task,
+            target_wheel_velocity=target_wheel_velocity,
+        )
         trajectory_count = int(round(float(count) * np.clip(trajectory_fraction, 0.0, 1.0)))
         reset_count = int(count) - trajectory_count
         for _ in range(reset_count):
@@ -245,7 +290,11 @@ def sample_teacher_states(
                 trajectory_count -= 1
                 if trajectory_count <= 0:
                     break
-                action = lqr_common_normalized_action(obs)
+                action = lqr_common_normalized_action(
+                    obs,
+                    task=task,
+                    target_wheel_velocity=target_wheel_velocity,
+                )
                 obs, _, terminated, truncated, _ = env.step(action)
                 if terminated or truncated:
                     break
@@ -258,20 +307,27 @@ def actor_mean_action(model: PPO, obs_tensor: torch.Tensor) -> torch.Tensor:
     return model.policy.action_net(latent_pi)
 
 
-def assign_linear_lqr_actor(model: PPO, action_limit: float = 200.0) -> bool:
+def assign_linear_lqr_actor(
+    model: PPO,
+    action_limit: float = 200.0,
+    *,
+    task: str = TASK_BALANCE,
+    target_wheel_velocity: float = 0.0,
+) -> bool:
     """Exactly initialize a no-hidden-layer PPO actor as the common-mode LQR law."""
     if len(model.policy.mlp_extractor.policy_net) != 0:
         return False
-    k = discrete_lqr_gain()
-    weights_model_order = -np.mean(k, axis=0, dtype=np.float64) / float(action_limit)
-    weights_env_order = np.zeros_like(weights_model_order)
-    weights_env_order[ENV_TO_MODEL] = weights_model_order
+    weights_env_order, bias = lqr_common_affine_policy(
+        action_limit=action_limit,
+        task=task,
+        target_wheel_velocity=target_wheel_velocity,
+    )
     layer = model.policy.action_net
     if layer.weight.shape != (1, len(weights_env_order)):
         return False
     with torch.no_grad():
         layer.weight.copy_(torch.as_tensor(weights_env_order[None, :], dtype=layer.weight.dtype, device=layer.weight.device))
-        layer.bias.zero_()
+        layer.bias.fill_(bias)
     return True
 
 
@@ -286,6 +342,8 @@ def clone_actor_from_lqr(
     seed: int,
     trajectory_fraction: float = 0.0,
     rollout_max_steps: int = 500,
+    task: str = TASK_BALANCE,
+    target_wheel_velocity: float = 0.0,
 ) -> tuple[float, int]:
     if steps <= 0 or n_samples <= 0:
         return 0.0, 0
@@ -295,8 +353,20 @@ def clone_actor_from_lqr(
         seed=seed,
         trajectory_fraction=trajectory_fraction,
         rollout_max_steps=rollout_max_steps,
+        task=task,
+        target_wheel_velocity=target_wheel_velocity,
     )
-    targets = np.asarray([lqr_common_normalized_action(state) for state in states], dtype=np.float32)
+    targets = np.asarray(
+        [
+            lqr_common_normalized_action(
+                state,
+                task=task,
+                target_wheel_velocity=target_wheel_velocity,
+            )
+            for state in states
+        ],
+        dtype=np.float32,
+    )
     device = model.policy.device
     obs_tensor = torch.as_tensor(states, dtype=torch.float32, device=device)
     target_tensor = torch.as_tensor(targets, dtype=torch.float32, device=device)
@@ -322,7 +392,11 @@ def warm_start_actor_from_lqr(model: PPO, cfg: TrainConfig, logger: logging.Logg
         logger.info("LQR warm start disabled")
         return
 
-    if cfg.lqr_exact_linear_init and assign_linear_lqr_actor(model):
+    if cfg.lqr_exact_linear_init and assign_linear_lqr_actor(
+        model,
+        task=cfg.task,
+        target_wheel_velocity=cfg.target_wheel_velocity,
+    ):
         logger.info("LQR exact linear actor initialization finished")
         return
 
@@ -337,6 +411,8 @@ def warm_start_actor_from_lqr(model: PPO, cfg: TrainConfig, logger: logging.Logg
         seed=cfg.seed + 700_000,
         trajectory_fraction=cfg.lqr_trajectory_fraction,
         rollout_max_steps=cfg.lqr_rollout_max_steps,
+        task=cfg.task,
+        target_wheel_velocity=cfg.target_wheel_velocity,
     )
     logger.info(
         "LQR warm start finished levels=%s samples=%d steps=%d batch=%d "
@@ -418,6 +494,8 @@ class CurriculumCallback(BaseCallback):
                 seed=self.cfg.seed + 90_000 + 1000 * level_index(level),
                 logger=self.file_logger,
                 tag=f"warm_start_eval_{level}",
+                task=self.cfg.task,
+                target_wheel_velocity=self.cfg.target_wheel_velocity,
             )
             solved = int(metrics["success_rate"] >= self.cfg.best_success_gate)
             score = (
@@ -461,6 +539,8 @@ class CurriculumCallback(BaseCallback):
             seed=self.cfg.seed + 800_000 + self.rollout_count,
             trajectory_fraction=self.cfg.lqr_trajectory_fraction,
             rollout_max_steps=self.cfg.lqr_rollout_max_steps,
+            task=self.cfg.task,
+            target_wheel_velocity=self.cfg.target_wheel_velocity,
         )
         if self.rollout_count % max(1, self.cfg.bc_log_every_rollouts) == 0:
             self.file_logger.info(
@@ -483,6 +563,8 @@ class CurriculumCallback(BaseCallback):
             seed=self.cfg.seed + 100_000 + self.num_timesteps,
             logger=self.file_logger,
             tag=f"curriculum_check_step_{self.num_timesteps}",
+            task=self.cfg.task,
+            target_wheel_velocity=self.cfg.target_wheel_velocity,
         )
         self.file_logger.info(
             "curriculum check step=%d level=%s success=%.3f return=%.3f length=%.3f",
@@ -554,7 +636,12 @@ def train(cfg: TrainConfig) -> None:
     logger = configure_logger(cfg.train_log)
     logger.info("training config=%s", cfg)
 
-    env = make_env(cfg.start_level, seed=cfg.seed)
+    env = make_env(
+        cfg.start_level,
+        seed=cfg.seed,
+        task=cfg.task,
+        target_wheel_velocity=cfg.target_wheel_velocity,
+    )
     model = PPO(
         "MlpPolicy",
         env,
@@ -611,11 +698,15 @@ def train(cfg: TrainConfig) -> None:
         seed=cfg.seed + 900_000,
         logger=logger,
         tag="final_eval",
+        task=cfg.task,
+        target_wheel_velocity=cfg.target_wheel_velocity,
     )
     row = {
         "algorithm": "PPO",
         "total_steps": cfg.total_steps,
         "net_arch": "-".join(str(v) for v in cfg.net_arch),
+        "task": cfg.task,
+        "target_wheel_velocity": cfg.target_wheel_velocity,
         "start_level": cfg.start_level,
         "final_eval_level": final_level,
         "curriculum": cfg.curriculum,
@@ -645,6 +736,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--net-arch", dest="net_arch", nargs="+", type=int, default=None)
     parser.add_argument("--start-level", dest="start_level", choices=LEVEL_ORDER, default=None)
     parser.add_argument("--max-level", dest="max_level", choices=LEVEL_ORDER, default=None)
+    parser.add_argument("--task", choices=TASKS, default=None)
+    parser.add_argument("--target-wheel-velocity", dest="target_wheel_velocity", type=float, default=None)
     parser.add_argument("--curriculum", dest="curriculum", action="store_true", default=None)
     parser.add_argument("--no-curriculum", dest="curriculum", action="store_false")
     parser.add_argument("--device", default=None)

@@ -22,8 +22,8 @@ lqr_exact_linear_init: true
 lqr_trajectory_fraction: 0.15
 lqr_rollout_max_steps: 500
 
-task: balance
-target_wheel_velocity: 0.0
+task: velocity
+target_wheel_velocity: 2.0
 
 start_level: easy
 max_level: hard
@@ -42,6 +42,6 @@ bc_lr: 0.0003
 bc_log_every_rollouts: 10
 
 eval_episodes: 20
-model_path: outputs/models/group11_ppo.zip
-eval_csv: outputs/logs/group11_ppo_eval.csv
-train_log: outputs/logs/group11_ppo_train.log
+model_path: outputs/models/group11_ppo_velocity.zip
+eval_csv: outputs/logs/group11_ppo_velocity_eval.csv
+train_log: outputs/logs/group11_ppo_velocity_train.log
