@@ -4,7 +4,7 @@
 __pycache__/
 *.pyc
 *.egg-info/
-outputs/models/*.zip
-outputs/logs/*.csv
-outputs/logs/*.log
-outputs/models/*.pt
+# outputs/models/*.zip
+# outputs/logs/*.csv
+# outputs/logs/*.log
+# outputs/models/*.pt
