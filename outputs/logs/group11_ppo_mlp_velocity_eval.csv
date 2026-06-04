@@ -1,2 +1,2 @@
-algorithm,total_steps,net_arch,task,target_wheel_velocity,start_level,final_eval_level,curriculum,return_mean,length_mean,success_rate
-PPO,600000,32-16,velocity,2.0,easy,hard,True,1394.844505795357,804.65,0.8
+algorithm,total_steps,net_arch,task,target_wheel_velocity,action_limit,start_level,final_eval_level,curriculum,return_mean,length_mean,success_rate
+PPO,600000,32-16,velocity,2.0,8000.0,easy,easy,True,505.63212695849353,364.2,0.0

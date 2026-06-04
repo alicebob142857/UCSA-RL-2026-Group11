@@ -1,2 +1,2 @@
-algorithm,total_steps,mu_net_arch,q_net_arch,task,target_wheel_velocity,start_level,final_eval_level,curriculum,return_mean,length_mean,success_rate
-NAF,120000,,128-64,velocity,2.0,easy,hard,True,1413.2643507927628,804.7,0.8
+algorithm,total_steps,mu_net_arch,q_net_arch,task,target_wheel_velocity,action_limit,start_level,final_eval_level,curriculum,return_mean,length_mean,success_rate
+NAF,120000,,128-64,velocity,2.0,8000.0,easy,hard,True,1775.2167423620754,1000.0,1.0
