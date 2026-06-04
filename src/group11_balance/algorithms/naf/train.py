@@ -43,8 +43,8 @@ class TrainConfig:
     q_net_arch: tuple[int, ...] = (128, 64)
     min_p: float = 1e-3
     max_p: float = 100.0
-    exploration_noise: float = 0.08
-    exploration_noise_final: float = 0.015
+    exploration_noise: float = 0.002
+    exploration_noise_final: float = 0.000375
     exploration_fraction: float = 0.70
     start_level: str = "easy"
     max_level: str = "hard"
@@ -68,13 +68,14 @@ class TrainConfig:
     lqr_rollout_max_steps: int = 500
     prefill_steps: int = 10_000
     prefill_policy: str = "lqr"
-    prefill_noise: float = 0.02
+    prefill_noise: float = 0.0005
     bc_regularization: bool = True
     bc_loss_weight: float = 0.02
     bc_decay_fraction: float = 0.80
     log_interval: int = 5000
     task: str = TASK_BALANCE
     target_wheel_velocity: float = 0.0
+    action_limit: float = 8000.0
     device: str = "auto"
 
 
@@ -223,6 +224,9 @@ def merge_config(config: dict[str, Any], args: argparse.Namespace) -> TrainConfi
             values[key] = tuple(int(v) for v in values[key])
     values["task"] = validate_task(values["task"])
     values["target_wheel_velocity"] = validate_target_wheel_velocity(values["target_wheel_velocity"])
+    values["action_limit"] = float(values["action_limit"])
+    if values["action_limit"] <= 0.0:
+        raise ValueError("action_limit must be positive")
     return TrainConfig(**values)
 
 
@@ -276,8 +280,10 @@ def lqr_batch_actions(
     *,
     task: str = TASK_BALANCE,
     target_wheel_velocity: float = 0.0,
+    action_limit: float = 8000.0,
 ) -> torch.Tensor:
     weights, bias = lqr_common_affine_policy(
+        action_limit=action_limit,
         task=task,
         target_wheel_velocity=target_wheel_velocity,
     )
@@ -342,6 +348,7 @@ def evaluate_policy(
     tag: str = "eval",
     task: str = TASK_BALANCE,
     target_wheel_velocity: float = 0.0,
+    action_limit: float = 8000.0,
 ) -> dict[str, float]:
     returns: list[float] = []
     lengths: list[int] = []
@@ -349,6 +356,7 @@ def evaluate_policy(
     for ep in range(episodes):
         env = TwoStageBalanceEnv(
             init_level=level,
+            action_limit=action_limit,
             task=task,
             target_wheel_velocity=target_wheel_velocity,
         )
@@ -409,6 +417,7 @@ def sample_teacher_states(
     rollout_max_steps: int = 500,
     task: str = TASK_BALANCE,
     target_wheel_velocity: float = 0.0,
+    action_limit: float = 8000.0,
 ) -> np.ndarray:
     rng = np.random.default_rng(seed)
     states = []
@@ -417,6 +426,7 @@ def sample_teacher_states(
     for level, count in zip(levels, counts):
         env = TwoStageBalanceEnv(
             init_level=level,
+            action_limit=action_limit,
             task=task,
             target_wheel_velocity=target_wheel_velocity,
         )
@@ -434,6 +444,7 @@ def sample_teacher_states(
                     break
                 action = lqr_common_normalized_action(
                     obs,
+                    action_limit=action_limit,
                     task=task,
                     target_wheel_velocity=target_wheel_velocity,
                 )
@@ -448,6 +459,7 @@ def assign_linear_lqr_mu(
     *,
     task: str = TASK_BALANCE,
     target_wheel_velocity: float = 0.0,
+    action_limit: float = 8000.0,
 ) -> bool:
     if len(agent.online.mu_net) != 1:
         return False
@@ -455,6 +467,7 @@ def assign_linear_lqr_mu(
     if not isinstance(layer, torch.nn.Linear):
         return False
     weights, bias = lqr_common_affine_policy(
+        action_limit=action_limit,
         task=task,
         target_wheel_velocity=target_wheel_velocity,
     )
@@ -480,6 +493,7 @@ def clone_mu_from_lqr(
     rollout_max_steps: int,
     task: str = TASK_BALANCE,
     target_wheel_velocity: float = 0.0,
+    action_limit: float = 8000.0,
 ) -> tuple[float, int]:
     if steps <= 0 or n_samples <= 0:
         return 0.0, 0
@@ -491,12 +505,14 @@ def clone_mu_from_lqr(
         rollout_max_steps=rollout_max_steps,
         task=task,
         target_wheel_velocity=target_wheel_velocity,
+        action_limit=action_limit,
     )
     targets = lqr_batch_actions(
         states,
         device=agent.device,
         task=task,
         target_wheel_velocity=target_wheel_velocity,
+        action_limit=action_limit,
     )
     obs_tensor = torch.as_tensor(states, dtype=torch.float32, device=agent.device)
     optimizer = torch.optim.Adam(agent.online.mu_net.parameters(), lr=lr)
@@ -522,6 +538,7 @@ def warm_start_mu_from_lqr(agent: NAFAgent, cfg: TrainConfig, logger: logging.Lo
         agent,
         task=cfg.task,
         target_wheel_velocity=cfg.target_wheel_velocity,
+        action_limit=cfg.action_limit,
     ):
         logger.info("LQR exact linear mu initialization finished")
         return
@@ -539,6 +556,7 @@ def warm_start_mu_from_lqr(agent: NAFAgent, cfg: TrainConfig, logger: logging.Lo
         rollout_max_steps=cfg.lqr_rollout_max_steps,
         task=cfg.task,
         target_wheel_velocity=cfg.target_wheel_velocity,
+        action_limit=cfg.action_limit,
     )
     logger.info(
         "LQR mu warm start finished levels=%s samples=%d steps=%d batch=%d "
@@ -563,6 +581,7 @@ def prefill_replay(agent: NAFAgent, buffer: ReplayBuffer, cfg: TrainConfig, logg
     for level, count in zip(levels, counts):
         env = TwoStageBalanceEnv(
             init_level=level,
+            action_limit=cfg.action_limit,
             task=cfg.task,
             target_wheel_velocity=cfg.target_wheel_velocity,
         )
@@ -571,6 +590,7 @@ def prefill_replay(agent: NAFAgent, buffer: ReplayBuffer, cfg: TrainConfig, logg
             if cfg.prefill_policy == "lqr":
                 action = lqr_common_normalized_action(
                     obs,
+                    action_limit=cfg.action_limit,
                     task=cfg.task,
                     target_wheel_velocity=cfg.target_wheel_velocity,
                 )
@@ -641,6 +661,7 @@ def train(cfg: TrainConfig) -> None:
 
     probe_env = TwoStageBalanceEnv(
         init_level=cfg.start_level,
+        action_limit=cfg.action_limit,
         task=cfg.task,
         target_wheel_velocity=cfg.target_wheel_velocity,
     )
@@ -691,6 +712,7 @@ def train(cfg: TrainConfig) -> None:
             tag=f"warm_start_eval_{level}",
             task=cfg.task,
             target_wheel_velocity=cfg.target_wheel_velocity,
+            action_limit=cfg.action_limit,
         )
         logger.info(
             "warm-start candidate level=%s success=%.3f return=%.3f length=%.3f",
@@ -704,6 +726,7 @@ def train(cfg: TrainConfig) -> None:
     rng = np.random.default_rng(cfg.seed + 1000)
     env = TwoStageBalanceEnv(
         init_level=cfg.start_level,
+        action_limit=cfg.action_limit,
         task=cfg.task,
         target_wheel_velocity=cfg.target_wheel_velocity,
     )
@@ -766,6 +789,7 @@ def train(cfg: TrainConfig) -> None:
                             batch["obs"],
                             task=cfg.task,
                             target_wheel_velocity=cfg.target_wheel_velocity,
+                            action_limit=cfg.action_limit,
                         )
                         if bc_weight > 0.0
                         else None
@@ -796,6 +820,7 @@ def train(cfg: TrainConfig) -> None:
                     tag=f"curriculum_check_step_{step}",
                     task=cfg.task,
                     target_wheel_velocity=cfg.target_wheel_velocity,
+                    action_limit=cfg.action_limit,
                 )
                 logger.info(
                     "curriculum check step=%d level=%s success=%.3f return=%.3f length=%.3f",
@@ -857,6 +882,7 @@ def train(cfg: TrainConfig) -> None:
         tag="final_eval",
         task=cfg.task,
         target_wheel_velocity=cfg.target_wheel_velocity,
+        action_limit=cfg.action_limit,
     )
     row = {
         "algorithm": "NAF",
@@ -865,6 +891,7 @@ def train(cfg: TrainConfig) -> None:
         "q_net_arch": "-".join(str(v) for v in cfg.q_net_arch),
         "task": cfg.task,
         "target_wheel_velocity": cfg.target_wheel_velocity,
+        "action_limit": cfg.action_limit,
         "start_level": cfg.start_level,
         "final_eval_level": final_level,
         "curriculum": cfg.curriculum,
@@ -886,6 +913,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-level", dest="max_level", choices=LEVEL_ORDER, default=None)
     parser.add_argument("--task", choices=TASKS, default=None)
     parser.add_argument("--target-wheel-velocity", dest="target_wheel_velocity", type=float, default=None)
+    parser.add_argument("--action-limit", dest="action_limit", type=float, default=None)
     parser.add_argument("--curriculum", dest="curriculum", action="store_true", default=None)
     parser.add_argument("--no-curriculum", dest="curriculum", action="store_false")
     parser.add_argument("--device", default=None)

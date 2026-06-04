@@ -33,7 +33,7 @@ class TwoStageBalanceEnv(gym.Env):
         self,
         *,
         init_level: str = "easy",
-        action_limit: float = 200.0,
+        action_limit: float = 8000.0,
         constants: RobotConstants = RobotConstants(),
         sensor_noise: float = 0.0,
         task: str = TASK_BALANCE,

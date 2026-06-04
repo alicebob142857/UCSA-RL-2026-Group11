@@ -10,7 +10,7 @@ clip_range: 0.2
 ent_coef: 0.0
 vf_coef: 0.5
 max_grad_norm: 0.5
-log_std_init: -1.5
+log_std_init: -5.0
 target_kl: 0.03
 net_arch: []
 lqr_warm_start: true
@@ -24,6 +24,7 @@ lqr_rollout_max_steps: 500
 
 task: velocity
 target_wheel_velocity: 2.0
+action_limit: 8000.0
 
 start_level: easy
 max_level: hard

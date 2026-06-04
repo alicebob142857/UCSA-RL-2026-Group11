@@ -43,7 +43,7 @@ def lqr_error_state(
 
 
 def lqr_common_affine_policy(
-    action_limit: float = 200.0,
+    action_limit: float = 8000.0,
     *,
     task: str = TASK_BALANCE,
     target_wheel_velocity: float = 0.0,
@@ -66,7 +66,7 @@ def lqr_common_affine_policy(
 
 def lqr_physical_action(
     state_env_order: np.ndarray,
-    action_limit: float = 200.0,
+    action_limit: float = 8000.0,
     *,
     task: str = TASK_BALANCE,
     target_wheel_velocity: float = 0.0,
@@ -84,7 +84,7 @@ def lqr_physical_action(
 
 def lqr_common_normalized_action(
     state_env_order: np.ndarray,
-    action_limit: float = 200.0,
+    action_limit: float = 8000.0,
     *,
     task: str = TASK_BALANCE,
     target_wheel_velocity: float = 0.0,

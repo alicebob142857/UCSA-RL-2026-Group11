@@ -275,7 +275,7 @@ def main() -> None:
     parser.add_argument("--algo", choices=["PPO", "NAF"], required=True)
     parser.add_argument("--model", required=True)
     parser.add_argument("--output", default="outputs/firmware/group11_policy.h")
-    parser.add_argument("--u-max", type=float, default=200.0)
+    parser.add_argument("--u-max", type=float, default=8000.0)
     parser.add_argument("--task", choices=TASKS, default=TASK_BALANCE)
     parser.add_argument("--target-wheel-velocity", dest="target_wheel_velocity", type=float, default=0.0)
     parser.add_argument("--device", default="cpu")

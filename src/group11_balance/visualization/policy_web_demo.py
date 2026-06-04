@@ -230,11 +230,20 @@ api("/api/reset?level=" + encodeURIComponent(level.value)).then(loop);
 
 
 class DemoState:
-    def __init__(self, model, level: str, seed: int, task: str, target_wheel_velocity: float):
+    def __init__(
+        self,
+        model,
+        level: str,
+        seed: int,
+        task: str,
+        target_wheel_velocity: float,
+        action_limit: float,
+    ):
         self.model = model
         self.task = task
         self.target_wheel_velocity = validate_target_wheel_velocity(target_wheel_velocity)
-        self.env = make_demo_env(level, task, self.target_wheel_velocity)
+        self.action_limit = float(action_limit)
+        self.env = make_demo_env(level, task, self.target_wheel_velocity, self.action_limit)
         self.seed = seed
         self.obs, _ = self.env.reset(seed=seed)
         self.reward = 0.0
@@ -243,7 +252,7 @@ class DemoState:
 
     def reset(self, level: str) -> dict:
         with self.lock:
-            self.env = make_demo_env(level, self.task, self.target_wheel_velocity)
+            self.env = make_demo_env(level, self.task, self.target_wheel_velocity, self.action_limit)
             self.obs, _ = self.env.reset(seed=self.seed)
             self.reward = 0.0
             self.done = False
@@ -304,9 +313,10 @@ def serializable(info: dict) -> dict:
     return result
 
 
-def make_demo_env(level: str, task: str, target_wheel_velocity: float) -> TwoStageBalanceEnv:
+def make_demo_env(level: str, task: str, target_wheel_velocity: float, action_limit: float) -> TwoStageBalanceEnv:
     env = TwoStageBalanceEnv(
         init_level=level,
+        action_limit=action_limit,
         task=task,
         target_wheel_velocity=target_wheel_velocity,
     )
@@ -372,6 +382,7 @@ def serve_policy_demo(
     port: int,
     task: str = TASK_BALANCE,
     target_wheel_velocity: float = 0.0,
+    action_limit: float = 8000.0,
 ) -> None:
     state = DemoState(
         model,
@@ -379,6 +390,7 @@ def serve_policy_demo(
         seed=seed,
         task=task,
         target_wheel_velocity=target_wheel_velocity,
+        action_limit=action_limit,
     )
     html = build_html(algorithm_name, initial_level=level)
     server = ThreadingHTTPServer((host, port), make_handler(state, html))

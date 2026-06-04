@@ -17,12 +17,13 @@ q_net_arch: [128, 64]
 min_p: 0.001
 max_p: 100.0
 
-exploration_noise: 0.08
-exploration_noise_final: 0.015
+exploration_noise: 0.002
+exploration_noise_final: 0.000375
 exploration_fraction: 0.70
 
 task: balance
 target_wheel_velocity: 0.0
+action_limit: 8000.0
 
 start_level: easy
 max_level: hard
@@ -44,7 +45,7 @@ lqr_rollout_max_steps: 500
 
 prefill_steps: 10000
 prefill_policy: lqr
-prefill_noise: 0.02
+prefill_noise: 0.0005
 
 bc_regularization: true
 bc_loss_weight: 0.02

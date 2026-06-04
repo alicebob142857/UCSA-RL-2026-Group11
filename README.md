@@ -157,10 +157,12 @@ a ∈ [-1, 1]
 环境内部映射成左右轮同向控制：
 
 ```text
-[u_l, u_r] = [200 * a, 200 * a]
+[u_l, u_r] = [action_limit * a, action_limit * a]
 ```
 
-该设计用于降低训练难度，使策略优先学习前后方向平衡，而不是学习左右轮差速转向。
+当前上车配置使用 `action_limit: 8000.0`，使策略输出与固件中 `u_L/u_R`
+轮角加速度控制输入的尺度一致。该设计用于降低训练难度，使策略优先学习
+前后方向平衡，而不是学习左右轮差速转向。
 
 ## 任务设置
 
@@ -718,7 +720,7 @@ action[1] = right wheel physical control
 当前 PPO 和 NAF 都输出 1 维归一化 common-mode 动作 `a ∈ [-1, 1]`，导出头文件会在 C 端执行：
 
 ```text
-u = clip(a, -1, 1) * 200
+u = clip(a, -1, 1) * GROUP11_U_MAX
 action = [u, u]
 ```
 

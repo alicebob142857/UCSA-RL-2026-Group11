@@ -43,7 +43,7 @@ class TrainConfig:
     ent_coef: float = 0.0
     vf_coef: float = 0.5
     max_grad_norm: float = 0.5
-    log_std_init: float = -1.5
+    log_std_init: float = -5.0
     target_kl: float = 0.03
     lr_schedule: str = "linear"
     net_arch: tuple[int, ...] = (128, 64, 32)
@@ -75,6 +75,7 @@ class TrainConfig:
     bc_log_every_rollouts: int = 10
     task: str = TASK_BALANCE
     target_wheel_velocity: float = 0.0
+    action_limit: float = 8000.0
     device: str = "auto"
 
 
@@ -109,6 +110,9 @@ def merge_config(config: dict[str, Any], args: argparse.Namespace) -> TrainConfi
         values["net_arch"] = tuple(int(v) for v in values["net_arch"])
     values["task"] = validate_task(values["task"])
     values["target_wheel_velocity"] = validate_target_wheel_velocity(values["target_wheel_velocity"])
+    values["action_limit"] = float(values["action_limit"])
+    if values["action_limit"] <= 0.0:
+        raise ValueError("action_limit must be positive")
     return TrainConfig(**values)
 
 
@@ -118,9 +122,11 @@ def make_env(
     *,
     task: str = TASK_BALANCE,
     target_wheel_velocity: float = 0.0,
+    action_limit: float = 8000.0,
 ):
     env = TwoStageBalanceEnv(
         init_level=level,
+        action_limit=action_limit,
         task=task,
         target_wheel_velocity=target_wheel_velocity,
     )
@@ -195,6 +201,7 @@ def evaluate_policy(
     tag: str = "eval",
     task: str = TASK_BALANCE,
     target_wheel_velocity: float = 0.0,
+    action_limit: float = 8000.0,
 ) -> dict[str, float]:
     returns: list[float] = []
     lengths: list[int] = []
@@ -202,6 +209,7 @@ def evaluate_policy(
     for ep in range(episodes):
         env = TwoStageBalanceEnv(
             init_level=level,
+            action_limit=action_limit,
             task=task,
             target_wheel_velocity=target_wheel_velocity,
         )
@@ -267,6 +275,7 @@ def sample_teacher_states(
     rollout_max_steps: int = 500,
     task: str = TASK_BALANCE,
     target_wheel_velocity: float = 0.0,
+    action_limit: float = 8000.0,
 ) -> np.ndarray:
     rng = np.random.default_rng(seed)
     states = []
@@ -275,6 +284,7 @@ def sample_teacher_states(
     for level, count in zip(levels, counts):
         env = TwoStageBalanceEnv(
             init_level=level,
+            action_limit=action_limit,
             task=task,
             target_wheel_velocity=target_wheel_velocity,
         )
@@ -292,6 +302,7 @@ def sample_teacher_states(
                     break
                 action = lqr_common_normalized_action(
                     obs,
+                    action_limit=action_limit,
                     task=task,
                     target_wheel_velocity=target_wheel_velocity,
                 )
@@ -309,7 +320,7 @@ def actor_mean_action(model: PPO, obs_tensor: torch.Tensor) -> torch.Tensor:
 
 def assign_linear_lqr_actor(
     model: PPO,
-    action_limit: float = 200.0,
+    action_limit: float = 8000.0,
     *,
     task: str = TASK_BALANCE,
     target_wheel_velocity: float = 0.0,
@@ -344,6 +355,7 @@ def clone_actor_from_lqr(
     rollout_max_steps: int = 500,
     task: str = TASK_BALANCE,
     target_wheel_velocity: float = 0.0,
+    action_limit: float = 8000.0,
 ) -> tuple[float, int]:
     if steps <= 0 or n_samples <= 0:
         return 0.0, 0
@@ -355,11 +367,13 @@ def clone_actor_from_lqr(
         rollout_max_steps=rollout_max_steps,
         task=task,
         target_wheel_velocity=target_wheel_velocity,
+        action_limit=action_limit,
     )
     targets = np.asarray(
         [
             lqr_common_normalized_action(
                 state,
+                action_limit=action_limit,
                 task=task,
                 target_wheel_velocity=target_wheel_velocity,
             )
@@ -394,6 +408,7 @@ def warm_start_actor_from_lqr(model: PPO, cfg: TrainConfig, logger: logging.Logg
 
     if cfg.lqr_exact_linear_init and assign_linear_lqr_actor(
         model,
+        action_limit=cfg.action_limit,
         task=cfg.task,
         target_wheel_velocity=cfg.target_wheel_velocity,
     ):
@@ -413,6 +428,7 @@ def warm_start_actor_from_lqr(model: PPO, cfg: TrainConfig, logger: logging.Logg
         rollout_max_steps=cfg.lqr_rollout_max_steps,
         task=cfg.task,
         target_wheel_velocity=cfg.target_wheel_velocity,
+        action_limit=cfg.action_limit,
     )
     logger.info(
         "LQR warm start finished levels=%s samples=%d steps=%d batch=%d "
@@ -496,6 +512,7 @@ class CurriculumCallback(BaseCallback):
                 tag=f"warm_start_eval_{level}",
                 task=self.cfg.task,
                 target_wheel_velocity=self.cfg.target_wheel_velocity,
+                action_limit=self.cfg.action_limit,
             )
             solved = int(metrics["success_rate"] >= self.cfg.best_success_gate)
             score = (
@@ -541,6 +558,7 @@ class CurriculumCallback(BaseCallback):
             rollout_max_steps=self.cfg.lqr_rollout_max_steps,
             task=self.cfg.task,
             target_wheel_velocity=self.cfg.target_wheel_velocity,
+            action_limit=self.cfg.action_limit,
         )
         if self.rollout_count % max(1, self.cfg.bc_log_every_rollouts) == 0:
             self.file_logger.info(
@@ -565,6 +583,7 @@ class CurriculumCallback(BaseCallback):
             tag=f"curriculum_check_step_{self.num_timesteps}",
             task=self.cfg.task,
             target_wheel_velocity=self.cfg.target_wheel_velocity,
+            action_limit=self.cfg.action_limit,
         )
         self.file_logger.info(
             "curriculum check step=%d level=%s success=%.3f return=%.3f length=%.3f",
@@ -641,6 +660,7 @@ def train(cfg: TrainConfig) -> None:
         seed=cfg.seed,
         task=cfg.task,
         target_wheel_velocity=cfg.target_wheel_velocity,
+        action_limit=cfg.action_limit,
     )
     model = PPO(
         "MlpPolicy",
@@ -700,6 +720,7 @@ def train(cfg: TrainConfig) -> None:
         tag="final_eval",
         task=cfg.task,
         target_wheel_velocity=cfg.target_wheel_velocity,
+        action_limit=cfg.action_limit,
     )
     row = {
         "algorithm": "PPO",
@@ -707,6 +728,7 @@ def train(cfg: TrainConfig) -> None:
         "net_arch": "-".join(str(v) for v in cfg.net_arch),
         "task": cfg.task,
         "target_wheel_velocity": cfg.target_wheel_velocity,
+        "action_limit": cfg.action_limit,
         "start_level": cfg.start_level,
         "final_eval_level": final_level,
         "curriculum": cfg.curriculum,
@@ -738,6 +760,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-level", dest="max_level", choices=LEVEL_ORDER, default=None)
     parser.add_argument("--task", choices=TASKS, default=None)
     parser.add_argument("--target-wheel-velocity", dest="target_wheel_velocity", type=float, default=None)
+    parser.add_argument("--action-limit", dest="action_limit", type=float, default=None)
     parser.add_argument("--curriculum", dest="curriculum", action="store_true", default=None)
     parser.add_argument("--no-curriculum", dest="curriculum", action="store_false")
     parser.add_argument("--device", default=None)

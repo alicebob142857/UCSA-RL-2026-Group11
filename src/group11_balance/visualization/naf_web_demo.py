@@ -16,6 +16,7 @@ def main() -> None:
     parser.add_argument("--level", choices=["easy", "medium", "hard"], default="easy")
     parser.add_argument("--task", choices=TASKS, default=TASK_BALANCE)
     parser.add_argument("--target-wheel-velocity", dest="target_wheel_velocity", type=float, default=0.0)
+    parser.add_argument("--action-limit", dest="action_limit", type=float, default=8000.0)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8849)
@@ -35,6 +36,7 @@ def main() -> None:
         port=args.port,
         task=args.task,
         target_wheel_velocity=args.target_wheel_velocity,
+        action_limit=args.action_limit,
     )
 
 
