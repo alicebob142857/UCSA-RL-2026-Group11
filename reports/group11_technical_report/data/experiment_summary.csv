@@ -1,0 +1,7 @@
+label,task,total_steps,action_limit,final_eval_level,return_mean,length_mean,success_rate,source_file
+Linear PPO,balance,200000,8000.0,hard,1799.7041844929158,1000.0,1.0,group11_ppo_eval.csv
+MLP PPO,balance,600000,8000.0,hard,1633.419961761269,910.0,0.9,group11_ppo_mlp_eval.csv
+NAF,balance,120000,8000.0,hard,1799.7041844929158,1000.0,1.0,group11_naf_eval.csv
+Linear PPO,velocity,200000,8000.0,hard,1775.2167423620754,1000.0,1.0,group11_ppo_velocity_eval.csv
+MLP PPO,velocity,600000,8000.0,easy,505.63212695849353,364.2,0.0,group11_ppo_mlp_velocity_eval.csv
+NAF,velocity,120000,8000.0,hard,1775.2167423620754,1000.0,1.0,group11_naf_velocity_eval.csv

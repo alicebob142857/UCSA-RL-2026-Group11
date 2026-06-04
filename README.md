@@ -47,10 +47,12 @@ UCSA-RL-2026-Group11/
 │           ├── naf_web_demo.py
 │           ├── policy_web_demo.py
 │           └── web_demo.py
-└── outputs/
-    ├── firmware/
-    ├── logs/
-    └── models/
+├── outputs/
+│   ├── firmware/
+│   ├── logs/
+│   └── models/
+└── reports/
+    └── group11_technical_report/         # 技术报告、实验曲线与可复现绘图脚本
 ```
 
 ## 模块状态
@@ -70,8 +72,9 @@ UCSA-RL-2026-Group11/
 | NAF 网页可视化 | 已完成初版 | 支持加载 NAF checkpoint、浏览器显示仿真、手动加入扰动 |
 | 其他 RL 模型 | 待补全 | 如 SAC、TD3、DDPG、Q-learning 等 |
 | 真实小车数据 | 待补全 | 包括采集方式、数据格式、系统辨识等 |
-| 实验结果对比 | 待补全 | 统一整理 reward 曲线、成功率、rollout 效果 |
-| 报告 / PPT | 待补全 | 放置课程展示材料与分工说明 |
+| 实验结果对比 | 已完成初版 | 已整理最终指标、单 episode 收敛响应、课程评估曲线与失败原因分布 |
+| 技术报告 | 已完成初版 | 位于 `reports/group11_technical_report/` |
+| PPT | 待补全 | 放置课程展示材料与分工说明 |
 
 ## 快速开始
 
