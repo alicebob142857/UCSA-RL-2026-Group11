@@ -4,6 +4,17 @@
 __pycache__/
 *.pyc
 *.egg-info/
+firmware/keil/MDK-ARM/**/*.o
+firmware/keil/MDK-ARM/**/*.d
+firmware/keil/MDK-ARM/**/*.crf
+firmware/keil/MDK-ARM/**/*.axf
+firmware/keil/MDK-ARM/**/*.map
+firmware/keil/MDK-ARM/**/*.htm
+firmware/keil/MDK-ARM/**/*.lnp
+firmware/keil/MDK-ARM/**/*.dep
+firmware/keil/MDK-ARM/**/*.sct
+firmware/keil/MDK-ARM/**/*.lst
+firmware/keil/MDK-ARM/**/*.log
 # outputs/models/*.zip
 # outputs/logs/*.csv
 # outputs/logs/*.log

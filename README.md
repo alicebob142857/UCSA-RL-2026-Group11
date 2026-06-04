@@ -51,6 +51,12 @@ UCSA-RL-2026-Group11/
 │   ├── firmware/
 │   ├── logs/
 │   └── models/
+├── firmware/                             # 小车固件源码、烧录工具、文档与 hex 固件
+│   ├── README.md                         # 烧录、WiFi 与上板说明
+│   ├── hex/                              # 统一存放可烧录的 .hex 文件
+│   ├── keil/                             # STM32/Keil 工程源码
+│   ├── tools/                            # mcuisp 与 USB 串口驱动
+│   └── docs/                             # 硬件与 WiFi 说明文档
 └── reports/
     └── group11_technical_report/         # 技术报告、实验曲线与可复现绘图脚本
 ```
@@ -72,6 +78,7 @@ UCSA-RL-2026-Group11/
 | NAF 网页可视化 | 已完成初版 | 支持加载 NAF checkpoint、浏览器显示仿真、手动加入扰动 |
 | 其他 RL 模型 | 待补全 | 如 SAC、TD3、DDPG、Q-learning 等 |
 | 真实小车数据 | 待补全 | 包括采集方式、数据格式、系统辨识等 |
+| 固件与上板 | 已加入初版 | 位于 `firmware/`，包含 Keil 工程、烧录工具、WiFi/硬件说明和统一整理的 hex 固件 |
 | 实验结果对比 | 已完成初版 | 已整理最终指标、单 episode 收敛响应、课程评估曲线与失败原因分布 |
 | 技术报告 | 已完成初版 | 位于 `reports/group11_technical_report/` |
 | PPT | 待补全 | 放置课程展示材料与分工说明 |
